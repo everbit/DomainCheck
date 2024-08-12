@@ -427,18 +427,26 @@ def write_output(sanitized_domain, original_domain, server_status, dns_info, ssl
 
 def display_in_terminal(sanitized_domain, original_domain, server_status, dns_info, ssl_info, registrar_info, subdomains, reputation_urls):
     print(f"\nDomain Provided for Analysis: {original_domain}\n")
-    print(f"Server Status:")
-    print(tabulate(server_status.items(), headers=["Protocol", "Status"]))
-
+    
+    # Display the formatted server status directly
+    print("Server Status:")
+    print(format_server_status(server_status))  # Format the server status for display
+    
     print("\nReputation Checks:")
     for service, url in reputation_urls.items():
         print(f"{service.capitalize()}: {url}")
 
     print("\nRegistrar Info:")
-    print(tabulate(registrar_info.items(), headers=["Key", "Value"]))
+    if isinstance(registrar_info, dict):
+        print(tabulate(registrar_info.items(), headers=["Key", "Value"]))
+    else:
+        print("Registrar Info: Not available")
 
     print("\nDNS Info:")
-    print(tabulate([(key, ", ".join(value)) for key, value in dns_info.items()], headers=["Record Type", "Records"]))
+    if isinstance(dns_info, dict):
+        print(tabulate([(key, ", ".join(value)) for key, value in dns_info.items()], headers=["Record Type", "Records"]))
+    else:
+        print("DNS Info: Not available")
 
     print("\nSubdomains:")
     if isinstance(subdomains, list):
@@ -448,7 +456,11 @@ def display_in_terminal(sanitized_domain, original_domain, server_status, dns_in
             print(f"{subdomain}: {status}")
 
     print("\nSSL Info:")
-    print(tabulate(ssl_info.items(), headers=["Key", "Value"]))
+    if isinstance(ssl_info, dict):
+        print(tabulate(ssl_info.items(), headers=["Key", "Value"]))
+    else:
+        print("SSL Info: Not available")
+
 
 def format_server_status(server_status):
     """
@@ -469,7 +481,7 @@ def format_server_status(server_status):
 def process_domain(domain, take_screenshot_flag, include_subdomains=False, should_check_subdomain_status=False, custom_user_agent=None, interactive=False):
     logging.info(f"Processing domain: {domain}")
 
-    sanitized_domain = None  # Initialize sanitized_domain to avoid UnboundLocalError
+    sanitized_domain = None
 
     try:
         # Extract just the domain name, stripping out any paths or query strings
@@ -482,7 +494,7 @@ def process_domain(domain, take_screenshot_flag, include_subdomains=False, shoul
         sanitized_domain = sanitize_domain(sanitized_domain)
         
         # Use the sanitized domain for the output directory
-        output_dir = os.path.join(base_path, sanitized_domain.split('_')[0])  # Directory name based on domain only
+        output_dir = os.path.join(base_path, sanitized_domain.split('_')[0])
         os.makedirs(output_dir, exist_ok=True)
 
         # Get the base domain for DNS, SSL, and subdomain checks
@@ -501,36 +513,33 @@ def process_domain(domain, take_screenshot_flag, include_subdomains=False, shoul
             logging.error(f"Failed to check HTTP status for {sanitized_domain.split('_')[0]}: {e}")
             server_status = {"http": "Unknown", "https": "Unknown"}
         
-        # Format the server status for better readability
-        formatted_server_status = format_server_status(server_status)
-        
-        # Perform DNS, SSL, and subdomain checks using the base domain
+        # Ensure dns_info, ssl_info, registrar_info are dictionaries
         try:
             dns_info = get_dns_info(base_domain)
         except Exception as e:
             logging.error(f"Failed to retrieve DNS information for {base_domain}: {e}")
-            dns_info = {"Error": "DNS check failed"}
+            dns_info = {"Error": f"DNS check failed: {str(e)}"}
 
         try:
             ssl_info = get_ssl_info(base_domain)
         except Exception as e:
             logging.error(f"Failed to retrieve SSL information for {base_domain}: {e}")
-            ssl_info = {"Error": "SSL check failed"}
+            ssl_info = {"Error": f"SSL check failed: {str(e)}"}
 
         try:
             registrar_info = get_registrar_info(base_domain)
         except Exception as e:
             logging.error(f"Failed to retrieve registrar information for {base_domain}: {e}")
-            registrar_info = {"Error": "Registrar check failed"}
+            registrar_info = {"Error": f"Registrar check failed: {str(e)}"}
 
         # Generate reputation URLs using the base domain
         try:
             reputation_urls = generate_reputation_urls(base_domain)
         except Exception as e:
             logging.error(f"Failed to generate reputation URLs for {base_domain}: {e}")
-            reputation_urls = {"Error": "Reputation check failed"}
+            reputation_urls = {"Error": f"Reputation check failed: {str(e)}"}
         
-        # Only scan for subdomains if the flag is enabled
+        # Subdomain scanning logic
         subdomains = []
         if include_subdomains:
             try:
@@ -538,7 +547,6 @@ def process_domain(domain, take_screenshot_flag, include_subdomains=False, shoul
                 if not subdomains:
                     subdomains = ["No subdomains identified."]
                 else:
-                    # Check if subdomains are up or down if the flag is enabled
                     if should_check_subdomain_status:
                         try:
                             subdomain_status = check_subdomain_status(subdomains, user_agent)
@@ -552,22 +560,22 @@ def process_domain(domain, take_screenshot_flag, include_subdomains=False, shoul
         else:
             subdomains = ["Subdomain scanning not performed."]
         
-        # Handle screenshot logic using the original domain (unaltered) for the URL and sanitized domain for the filename
+        # Screenshot handling logic
         screenshot_info = "Screenshot not taken."
         if take_screenshot_flag:
             try:
-                screenshot_path = take_screenshot(domain, output_dir, user_agent)  # Pass original domain
+                screenshot_path = take_screenshot(domain, output_dir, user_agent)
                 screenshot_info = f"Screenshot taken: {screenshot_path}" if screenshot_path else "Screenshot failed."
             except Exception as e:
                 logging.error(f"Failed to take screenshot for {domain}: {e}")
                 screenshot_info = "Screenshot failed."
 
-        # Write output including the original domain, screenshot, subdomain information, and reputation URLs
+        # Write output
         try:
             write_output(
-                sanitized_domain.split('_')[0],  # Pass the sanitized domain for the filename
-                domain,  # Pass the original domain for the top of the output file
-                f"{formatted_server_status}\n{screenshot_info}",
+                sanitized_domain.split('_')[0],
+                domain,
+                format_server_status(server_status),
                 dns_info,
                 ssl_info,
                 registrar_info,
@@ -578,12 +586,12 @@ def process_domain(domain, take_screenshot_flag, include_subdomains=False, shoul
         except Exception as e:
             logging.error(f"Failed to write output for {domain}: {e}")
 
-        # If interactive mode, display output in the terminal
+        # Display output in interactive mode
         if interactive:
             display_in_terminal(
-                sanitized_domain.split('_')[0],  # Pass the sanitized domain
-                domain,  # Pass the original domain
-                formatted_server_status,  # Use the formatted server status
+                sanitized_domain.split('_')[0],
+                domain,
+                server_status,
                 dns_info,
                 ssl_info,
                 registrar_info,
@@ -600,6 +608,9 @@ def process_domain(domain, take_screenshot_flag, include_subdomains=False, shoul
             logging.info(f"Finished processing domain: {sanitized_domain.split('_')[0]}")
         else:
             logging.info(f"Finished processing domain: {domain}")
+
+
+
 
 
 
