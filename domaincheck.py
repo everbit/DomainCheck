@@ -60,13 +60,29 @@ my_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (K
 
 def check_server_status(domain):
     logging.info(f"Checking server status for domain: {domain}")
+    
+    status = {
+        'http': 'Down (HTTP)',
+        'https': 'Down (HTTPS)'
+    }
+
+    # Check HTTP status
     try:
         response = requests.get(f"http://{domain}", timeout=5)
-        logging.info(f"Server status for {domain} - Status Code: {response.status_code}")
-        return response.status_code, "Up"
-    except requests.exceptions.RequestException:
-        logging.warning(f"Server status for {domain} - Domain is down or unreachable")
-        return None, "Down"
+        status['http'] = f"Up (HTTP)" if response.status_code == 200 else f"Up (HTTP) with Status Code {response.status_code}"
+        logging.info(f"HTTP server status for {domain} - {status['http']}")
+    except requests.exceptions.RequestException as e:
+        logging.warning(f"HTTP request to {domain} failed: {e}")
+    
+    # Check HTTPS status
+    try:
+        response = requests.get(f"https://{domain}", timeout=5)
+        status['https'] = f"Up (HTTPS)" if response.status_code == 200 else f"Up (HTTPS) with Status Code {response.status_code}"
+        logging.info(f"HTTPS server status for {domain} - {status['https']}")
+    except requests.exceptions.RequestException as e:
+        logging.warning(f"HTTPS request to {domain} failed: {e}")
+
+    return status
 
 
 def get_dns_info(domain):
@@ -121,10 +137,13 @@ def get_ssl_info(domain):
 
             ssl_info['subject'] = dict(x[0] for x in cert['subject'])
             ssl_info['issuer'] = dict(x[0] for x in cert['issuer'])
-            ssl_info['expiry'] = cert['notAfter']
             ssl_info['start_date'] = cert['notBefore']
+            ssl_info['expiry'] = cert['notAfter']
             ssl_info['serial_number'] = cert['serialNumber']
-            ssl_info['fingerprint'] = cert['subjectAltName']
+            
+            # Extract Subject Alternative Names (SANs)
+            san = cert.get('subjectAltName', ())
+            ssl_info['subject_alt_name'] = [entry[1] for entry in san]
 
         logging.info(f"SSL certificate information gathered for {domain}")
     except Exception as e:
@@ -163,6 +182,15 @@ def get_subdomains(domain):
     except Exception as e:
         logging.error(f"Failed to enumerate subdomains for {domain}: {e}")
         return [f"Error: {str(e)}"]
+
+
+def sanitize_domain(domain):
+    """
+    Strips out any protocol (http, https, etc.) from the domain input.
+    """
+    if "://" in domain:
+        domain = domain.split("://")[1]
+    return domain.split('/')[0]  # Further strip out any path after the domain
 
 
 def bypass_cookie_consent(driver):
@@ -221,8 +249,10 @@ def take_screenshot(domain, output_dir):
         driver.quit()
 
         logging.info(f"Screenshot saved to {screenshot_path}")
+        return screenshot_path
     except Exception as e:
         logging.error(f"Failed to take screenshot of {domain}: {e}")
+        return None
 
 
 def write_output(domain, server_status, dns_info, ssl_info, registrar_info, subdomains, output_dir):
@@ -233,39 +263,54 @@ def write_output(domain, server_status, dns_info, ssl_info, registrar_info, subd
     logging.info(f"Writing output to file: {filename}")
     with open(filename, 'w') as f:
         f.write(f"Domain: {domain}\n")
-        f.write(f"Server Status: {server_status}\n")
+        #f.write(f"Server Status: {server_status}\n")
+        f.write(f"{server_status}\n")
+
+        
+        f.write("\nRegistrar Info:\n")
+        for key, value in registrar_info.items():
+            f.write(f"{key}: {value}\n")
+            
         f.write("\nDNS Info:\n")
         for key, value in dns_info.items():
             f.write(f"{key}: {', '.join(value)}\n")
 
-        f.write("\nSSL Info:\n")
-        for key, value in ssl_info.items():
-            f.write(f"{key}: {value}\n")
-
-        f.write("\nRegistrar Info:\n")
-        for key, value in registrar_info.items():
-            f.write(f"{key}: {value}\n")
-
         f.write("\nSubdomains:\n")
         for subdomain in subdomains:
             f.write(f"{subdomain}\n")
+            
+        f.write("\nSSL Info:\n")
+        for key, value in ssl_info.items():
+            f.write(f"{key}: {value}\n")
     logging.info(f"Output successfully written for domain: {domain}")
 
 
-def process_domain(domain, take_screenshot_flag):
+def process_domain(domain, take_screenshot_flag, include_subdomains=False):
+    domain = sanitize_domain(domain)  # Sanitize the domain input
     logging.info(f"Processing domain: {domain}")
     output_dir = os.path.join(base_path, f"{domain}")
     os.makedirs(output_dir, exist_ok=True)
 
-    server_status, status = check_server_status(domain)
+    server_status = check_server_status(domain)
     dns_info = get_dns_info(domain)
     ssl_info = get_ssl_info(domain)
     registrar_info = get_registrar_info(domain)
-    subdomains = get_subdomains(domain)
-    write_output(domain, status, dns_info, ssl_info, registrar_info, subdomains, output_dir)
+    
+    # Only scan for subdomains if the flag is enabled
+    subdomains = get_subdomains(domain) if include_subdomains else ["Subdomain scanning not performed."]
+    
+    # Prepare the combined status message
+    combined_status = f"Server Status: {server_status['http']}\nServer Status: {server_status['https']}"
 
+    # Handle screenshot logic
     if take_screenshot_flag:
-        take_screenshot(domain, output_dir)
+        screenshot_path = take_screenshot(domain, output_dir)
+        screenshot_info = f"Screenshot taken: {screenshot_path}" if screenshot_path else "Screenshot failed."
+    else:
+        screenshot_info = "Screenshot not taken."
+
+    # Write output including screenshot information
+    write_output(domain, f"{combined_status}\n{screenshot_info}", dns_info, ssl_info, registrar_info, subdomains, output_dir)
 
     logging.info(f"Finished processing domain: {domain}")
 
@@ -274,19 +319,20 @@ def main():
     parser = argparse.ArgumentParser(description="Domain Profiler Script")
     parser.add_argument("-d", "--domain", help="Domain to profile", required=False)
     parser.add_argument("-f", "--file", help="File containing list of domains", required=False)
+    parser.add_argument("-i", "--include-subdomains", help="Include subdomain enumeration", action='store_true')
     parser.add_argument("-s", "--screenshot", help="Take screenshot of the domain", action='store_true')
     parser.add_argument("-t", "--threads", help="Number of threads to use for processing", type=int, default=5)
-
+    
     args = parser.parse_args()
 
     if args.domain:
-        process_domain(args.domain, args.screenshot)
+        process_domain(args.domain, args.screenshot, args.include_subdomains)
 
     if args.file:
         with open(args.file, 'r') as file:
             domains = file.read().splitlines()
             with ThreadPoolExecutor(max_workers=args.threads) as executor:
-                futures = [executor.submit(process_domain, domain, args.screenshot) for domain in domains]
+                futures = [executor.submit(process_domain, domain, args.screenshot, args.include_subdomains) for domain in domains]
                 for future in as_completed(futures):
                     try:
                         future.result()
