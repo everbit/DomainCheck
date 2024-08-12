@@ -450,6 +450,22 @@ def display_in_terminal(sanitized_domain, original_domain, server_status, dns_in
     print("\nSSL Info:")
     print(tabulate(ssl_info.items(), headers=["Key", "Value"]))
 
+def format_server_status(server_status):
+    """
+    Format the server status dictionary into a more readable string.
+    """
+    formatted_status = []
+    for protocol, status in server_status.items():
+        # Extract the actual status from the string
+        if "Up" in status:
+            status_text = "UP"
+        elif "Down" in status:
+            status_text = "DOWN"
+        else:
+            status_text = "Unknown"
+        formatted_status.append(f"{protocol.upper()} status: {status_text}")
+    return "\n".join(formatted_status)
+
 def process_domain(domain, take_screenshot_flag, include_subdomains=False, should_check_subdomain_status=False, custom_user_agent=None, interactive=False):
     logging.info(f"Processing domain: {domain}")
 
@@ -484,6 +500,9 @@ def process_domain(domain, take_screenshot_flag, include_subdomains=False, shoul
         except Exception as e:
             logging.error(f"Failed to check HTTP status for {sanitized_domain.split('_')[0]}: {e}")
             server_status = {"http": "Unknown", "https": "Unknown"}
+        
+        # Format the server status for better readability
+        formatted_server_status = format_server_status(server_status)
         
         # Perform DNS, SSL, and subdomain checks using the base domain
         try:
@@ -533,12 +552,6 @@ def process_domain(domain, take_screenshot_flag, include_subdomains=False, shoul
         else:
             subdomains = ["Subdomain scanning not performed."]
         
-        # Prepare the combined status message
-        combined_status = {
-            "http": server_status.get('http', 'Unknown'),
-            "https": server_status.get('https', 'Unknown')
-        }
-        
         # Handle screenshot logic using the original domain (unaltered) for the URL and sanitized domain for the filename
         screenshot_info = "Screenshot not taken."
         if take_screenshot_flag:
@@ -554,7 +567,7 @@ def process_domain(domain, take_screenshot_flag, include_subdomains=False, shoul
             write_output(
                 sanitized_domain.split('_')[0],  # Pass the sanitized domain for the filename
                 domain,  # Pass the original domain for the top of the output file
-                f"{combined_status}\n{screenshot_info}",
+                f"{formatted_server_status}\n{screenshot_info}",
                 dns_info,
                 ssl_info,
                 registrar_info,
@@ -570,7 +583,7 @@ def process_domain(domain, take_screenshot_flag, include_subdomains=False, shoul
             display_in_terminal(
                 sanitized_domain.split('_')[0],  # Pass the sanitized domain
                 domain,  # Pass the original domain
-                combined_status,
+                formatted_server_status,  # Use the formatted server status
                 dns_info,
                 ssl_info,
                 registrar_info,
@@ -587,6 +600,8 @@ def process_domain(domain, take_screenshot_flag, include_subdomains=False, shoul
             logging.info(f"Finished processing domain: {sanitized_domain.split('_')[0]}")
         else:
             logging.info(f"Finished processing domain: {domain}")
+
+
 
 def interactive_mode():
     print("Welcome to the Interactive Domain Profiler!")
