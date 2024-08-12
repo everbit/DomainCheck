@@ -590,34 +590,100 @@ def process_domain(domain, take_screenshot_flag, include_subdomains=False, shoul
 
 def interactive_mode():
     print("Welcome to the Interactive Domain Profiler!")
-    domain = input("Please enter the domain you want to profile: ").strip()
-
+    print("You can type 'exit' at any time to quit the interactive mode.\n")
+    
+    # Loop to get a valid domain input
+    while True:
+        domain = input("Please enter the domain you want to profile: ").strip()
+        if domain.lower() == "exit":
+            print("Exiting interactive mode.")
+            return
+        try:
+            validate_domain(domain)
+            break  # Exit loop if domain is valid
+        except ValueError:
+            print("Invalid domain format. Please try again with a valid domain (e.g., example.com).")
+    
+    # Loop to get a valid choice for subdomain enumeration
     while True:
         subdomains_choice = input("Do you want to enumerate subdomains? (yes/no): ").strip().lower()
+        if subdomains_choice == "exit":
+            print("Exiting interactive mode.")
+            return
         if subdomains_choice in ['yes', 'no']:
             include_subdomains = subdomains_choice == 'yes'
             break
-        print("Please answer 'yes' or 'no'.")
-
+        else:
+            print("Invalid input. Please answer 'yes' or 'no'.")
+    
+    # Loop to get a valid choice for subdomain status check if subdomains are to be enumerated
     should_check_subdomain_status = False
     if include_subdomains:
         while True:
             subdomain_status_choice = input("Do you want to check if the subdomains are up? (yes/no): ").strip().lower()
+            if subdomain_status_choice == "exit":
+                print("Exiting interactive mode.")
+                return
             if subdomain_status_choice in ['yes', 'no']:
                 should_check_subdomain_status = subdomain_status_choice == 'yes'
                 break
-            print("Please answer 'yes' or 'no'.")
+            else:
+                print("Invalid input. Please answer 'yes' or 'no'.")
 
+    # Loop to get a valid choice for screenshot capture
     while True:
         screenshot_choice = input("Do you want to take a screenshot of the domain? (yes/no): ").strip().lower()
+        if screenshot_choice == "exit":
+            print("Exiting interactive mode.")
+            return
         if screenshot_choice in ['yes', 'no']:
             take_screenshot_flag = screenshot_choice == 'yes'
             break
-        print("Please answer 'yes' or 'no'.")
+        else:
+            print("Invalid input. Please answer 'yes' or 'no'.")
 
-    custom_user_agent = input("Optionally, provide a custom user-agent (or press Enter to use a random one): ").strip() or None
+    # Optional: Custom User-Agent
+    while True:
+        custom_user_agent = input("Optionally, provide a custom user-agent (or press Enter to use a random one): ").strip()
+        if custom_user_agent.lower() == "exit":
+            print("Exiting interactive mode.")
+            return
+        if custom_user_agent:
+            # Validate that the custom user-agent isn't just whitespace or too short
+            if len(custom_user_agent) < 10:
+                print("The provided user-agent is too short. Please provide a valid user-agent string.")
+            else:
+                break
+        else:
+            custom_user_agent = None
+            break
+    
+    # Final confirmation before processing
+    print("\nSummary of your selections:")
+    print(f"Domain: {domain}")
+    print(f"Subdomain Enumeration: {'Yes' if include_subdomains else 'No'}")
+    if include_subdomains:
+        print(f"Check Subdomain Status: {'Yes' if should_check_subdomain_status else 'No'}")
+    print(f"Take Screenshot: {'Yes' if take_screenshot_flag else 'No'}")
+    if custom_user_agent:
+        print(f"Custom User-Agent: {custom_user_agent}")
+    else:
+        print("Custom User-Agent: None (a random one will be used)")
 
-    process_domain(domain, take_screenshot_flag, include_subdomains, should_check_subdomain_status, custom_user_agent, interactive=True)
+    while True:
+        proceed_choice = input("Do you want to proceed with these settings? (yes/no): ").strip().lower()
+        if proceed_choice == "exit":
+            print("Exiting interactive mode.")
+            return
+        if proceed_choice == 'yes':
+            process_domain(domain, take_screenshot_flag, include_subdomains, should_check_subdomain_status, custom_user_agent, interactive=True)
+            break
+        elif proceed_choice == 'no':
+            print("Operation cancelled by the user.")
+            break
+        else:
+            print("Invalid input. Please answer 'yes' or 'no'.")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Domain Profiler Script")
