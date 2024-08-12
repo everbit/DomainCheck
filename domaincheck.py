@@ -164,7 +164,16 @@ def get_registrar_info(domain):
         registrar_info['created'] = domain_info.creation_date
         registrar_info['updated'] = domain_info.updated_date
         registrar_info['expires'] = domain_info.expiration_date
-        registrar_info['abuse_contact_email'] = domain_info.emails
+
+        # Extract abuse contact email, if available
+        abuse_email = domain_info.emails if domain_info.emails else None
+        if not abuse_email and domain_info.text:
+            for line in domain_info.text.splitlines():
+                if "abuse" in line.lower() and "email" in line.lower():
+                    abuse_email = line.split(":")[-1].strip()
+                    break
+
+        registrar_info['abuse_contact_email'] = abuse_email or "Not Available"
 
         logging.info(f"Registrar information gathered for {domain}")
     except Exception as e:
@@ -196,32 +205,34 @@ def sanitize_domain(domain):
 
 def bypass_cookie_consent(driver):
     logging.info("Attempting to bypass cookie consent pop-up.")
-    try:
-        possible_selectors = [
-            "//button[contains(text(), 'Accept')]",
-            "//button[contains(text(), 'Agree')]",
-            "//button[contains(text(), 'I agree')]",
-            "//button[contains(text(), 'OK')]",
-            "//button[contains(text(), 'Got it')]",
-            "//button[contains(text(), 'Allow all')]",
-            "//a[contains(text(), 'Accept')]",
-            "//a[contains(text(), 'Agree')]",
-            "//div[contains(@class, 'cookie')]//button",
-            "//div[contains(@class, 'consent')]//button",
-            "//div[contains(@class, 'cookie')]//a",
-            "//div[contains(@class, 'consent')]//a",
-        ]
+    possible_selectors = [
+        "//button[contains(text(), 'Accept')]",
+        "//button[contains(text(), 'Agree')]",
+        "//button[contains(text(), 'I agree')]",
+        "//button[contains(text(), 'OK')]",
+        "//button[contains(text(), 'Got it')]",
+        "//button[contains(text(), 'Allow all')]",
+        "//a[contains(text(), 'Accept')]",
+        "//a[contains(text(), 'Agree')]",
+        "//div[contains(@class, 'cookie')]//button",
+        "//div[contains(@class, 'consent')]//button",
+        "//div[contains(@class, 'cookie')]//a",
+        "//div[contains(@class, 'consent')]//a",
+    ]
 
-        for selector in possible_selectors:
-            try:
-                WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, selector))).click()
-                logging.info(f"Clicked cookie consent button with selector: {selector}")
+    def click_selector(selector):
+        try:
+            WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, selector))).click()
+            logging.info(f"Clicked cookie consent button with selector: {selector}")
+            return True
+        except Exception:
+            return False
+
+    with ThreadPoolExecutor() as executor:
+        future_to_selector = {executor.submit(click_selector, selector): selector for selector in possible_selectors}
+        for future in future_to_selector:
+            if future.result():  # If one selector was successfully clicked, stop further attempts
                 break
-            except Exception as e:
-                logging.debug(f"No clickable element found for selector: {selector}")
-
-    except Exception as e:
-        logging.error(f"Failed to bypass cookie consent: {e}")
 
 
 def take_screenshot(domain, output_dir):
@@ -311,25 +322,26 @@ def process_domain(domain, take_screenshot_flag, include_subdomains=False):
     registrar_info = get_registrar_info(domain)
     
     # Only scan for subdomains if the flag is enabled
-    subdomains = get_subdomains(domain) if include_subdomains else ["Subdomain scanning not performed."]
+    if include_subdomains:
+        subdomains = get_subdomains(domain)
+        if not subdomains:
+            subdomains = ["No subdomains identified."]
+    else:
+        subdomains = ["Subdomain scanning not performed."]
     
     # Prepare the combined status message
     combined_status = f"Server Status: {server_status['http']}\nServer Status: {server_status['https']}"
-
+    
     # Handle screenshot logic
     if take_screenshot_flag:
         screenshot_path = take_screenshot(domain, output_dir)
         screenshot_info = f"Screenshot taken: {screenshot_path}" if screenshot_path else "Screenshot failed."
     else:
         screenshot_info = "Screenshot not taken."
-            
-    # Generate VirusTotal URL for the domain
-    vt_url = generate_virustotal_url(domain)
-    logging.info(f"VirusTotal URL for {domain}: {vt_url}")
 
-    # Write output including screenshot information
-    write_output(domain, f"{combined_status}\n{screenshot_info}\nVirusTotal URL: {vt_url}", dns_info, ssl_info, registrar_info, subdomains, output_dir)
-    
+    # Write output including screenshot and subdomain information
+    write_output(domain, f"{combined_status}\n{screenshot_info}", dns_info, ssl_info, registrar_info, subdomains, output_dir)
+
     logging.info(f"Finished processing domain: {domain}")
 
 
@@ -339,7 +351,7 @@ def main():
     parser.add_argument("-f", "--file", help="File containing list of domains", required=False)
     parser.add_argument("-i", "--include-subdomains", help="Include subdomain enumeration", action='store_true')
     parser.add_argument("-s", "--screenshot", help="Take screenshot of the domain", action='store_true')
-    parser.add_argument("-t", "--threads", help="Number of threads to use for processing", type=int, default=5)
+    parser.add_argument("-t", "--threads", help="Number of threads to use for processing", type=int, default=20)
     
     args = parser.parse_args()
 
