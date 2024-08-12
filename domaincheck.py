@@ -10,6 +10,7 @@ import whois
 from datetime import datetime
 import sublist3r
 import logging
+import hashlib
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -253,6 +254,19 @@ def take_screenshot(domain, output_dir):
     except Exception as e:
         logging.error(f"Failed to take screenshot of {domain}: {e}")
         return None
+    
+    
+def generate_virustotal_url(domain):
+    # Step 1: Format the domain as a URL
+    formatted_url = f"http://{domain}/"
+    
+    # Step 2: Hash the formatted URL using SHA-256
+    sha256_hash = hashlib.sha256(formatted_url.encode('utf-8')).hexdigest()
+    
+    # Step 3: Create the VirusTotal URL using the hashed value
+    vt_url = f"https://www.virustotal.com/gui/url/{sha256_hash}"
+    
+    return vt_url
 
 
 def write_output(domain, server_status, dns_info, ssl_info, registrar_info, subdomains, output_dir):
@@ -308,10 +322,14 @@ def process_domain(domain, take_screenshot_flag, include_subdomains=False):
         screenshot_info = f"Screenshot taken: {screenshot_path}" if screenshot_path else "Screenshot failed."
     else:
         screenshot_info = "Screenshot not taken."
+            
+    # Generate VirusTotal URL for the domain
+    vt_url = generate_virustotal_url(domain)
+    logging.info(f"VirusTotal URL for {domain}: {vt_url}")
 
     # Write output including screenshot information
-    write_output(domain, f"{combined_status}\n{screenshot_info}", dns_info, ssl_info, registrar_info, subdomains, output_dir)
-
+    write_output(domain, f"{combined_status}\n{screenshot_info}\nVirusTotal URL: {vt_url}", dns_info, ssl_info, registrar_info, subdomains, output_dir)
+    
     logging.info(f"Finished processing domain: {domain}")
 
 
