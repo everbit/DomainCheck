@@ -143,6 +143,7 @@ def generate_reputation_urls(domain):
         "google_safebrowsing": google_safebrowsing_url
     }
 
+
 def get_dns_info(domain):
     base_domain = sanitize_and_get_base_domain(domain)
     logging.info(f"Gathering DNS information for base domain: {base_domain}")
@@ -169,6 +170,69 @@ def get_dns_info(domain):
             dns_info[record_type] = result
 
     return dns_info
+
+def check_dnssec(domain):
+    """
+    Check if DNSSEC is enabled for the domain.
+    """
+    try:
+        dnssec_records = dns.resolver.resolve(domain, 'DNSKEY')
+        if dnssec_records:
+            return "DNSSEC is enabled."
+        else:
+            return "DNSSEC is not enabled."
+    except dns.resolver.NoAnswer:
+        return "DNSSEC is not enabled."
+    except Exception as e:
+        logging.error(f"Failed to check DNSSEC for {domain}: {e}")
+        return f"Error: {e}"
+
+def check_spf(domain):
+    """
+    Check if the domain has a valid SPF record.
+    """
+    try:
+        spf_records = dns.resolver.resolve(domain, 'TXT')
+        for record in spf_records:
+            if 'v=spf1' in record.to_text():
+                return f"SPF record found: {record.to_text()}"
+        return "No SPF record found."
+    except Exception as e:
+        logging.error(f"Failed to check SPF for {domain}: {e}")
+        return f"Error: {e}"
+
+def check_dkim(domain):
+    """
+    Check if the domain has a valid DKIM record.
+    """
+    selector = 'default'
+    dkim_domain = f"{selector}._domainkey.{domain}"
+    try:
+        dkim_records = dns.resolver.resolve(dkim_domain, 'TXT')
+        for record in dkim_records:
+            return f"DKIM record found: {record.to_text()}"
+        return "No DKIM record found."
+    except dns.resolver.NXDOMAIN:
+        return "No DKIM record found."
+    except Exception as e:
+        logging.error(f"Failed to check DKIM for {domain}: {e}")
+        return f"Error: {e}"
+
+def check_dmarc(domain):
+    """
+    Check if the domain has a DMARC record.
+    """
+    dmarc_domain = f"_dmarc.{domain}"
+    try:
+        dmarc_records = dns.resolver.resolve(dmarc_domain, 'TXT')
+        for record in dmarc_records:
+            return f"DMARC record found: {record.to_text()}"
+        return "No DMARC record found."
+    except dns.resolver.NoAnswer:
+        return "No DMARC record found."
+    except Exception as e:
+        logging.error(f"Failed to check DMARC for {domain}: {e}")
+        return f"Error: {e}"
 
 def get_ssl_info(domain):
     base_domain = sanitize_and_get_base_domain(domain)
@@ -205,6 +269,21 @@ def get_ssl_info(domain):
         ssl_info = future.result()
 
     return ssl_info
+
+def check_certificate_transparency(domain):
+    """
+    Check if the domain's SSL certificate is listed in Certificate Transparency logs.
+    """
+    try:
+        ct_url = f"https://crt.sh/?q={domain}"
+        response = requests.get(ct_url)
+        if response.status_code == 200:
+            return f"Certificate Transparency logs found: {ct_url}"
+        else:
+            return "No Certificate Transparency logs found."
+    except Exception as e:
+        logging.error(f"Failed to check Certificate Transparency for {domain}: {e}")
+        return f"Error: {e}"
 
 def get_registrar_info(domain):
     logging.info(f"Gathering registrar information for domain: {domain}")
@@ -392,7 +471,7 @@ def take_screenshot(domain, output_dir, user_agent):
         logging.error(f"Failed to take screenshot of {domain}: {e}")
         return None
 
-def write_output(sanitized_domain, original_domain, server_status, dns_info, ssl_info, registrar_info, subdomains, output_dir, reputation_urls):
+def write_output(sanitized_domain, original_domain, server_status, dns_info, ssl_info, registrar_info, subdomains, output_dir, reputation_urls, spf_info=None, dmarc_info=None, dkim_info=None, dnssec_info=None, ct_info=None):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = os.path.join(output_dir, f"{original_domain}_{timestamp}.txt")
     os.makedirs(os.path.dirname(filename), exist_ok=True)
@@ -407,6 +486,10 @@ def write_output(sanitized_domain, original_domain, server_status, dns_info, ssl
             f.write("\nReputation Checks:\n")
             for service, url in reputation_urls.items():
                 f.write(f"{service.capitalize()}: {url}\n")
+            
+            if ct_info:
+                f.write("\nCertificate Transparency Info:\n")
+                f.write(f"{ct_info}\n")
 
             f.write("\nRegistrar Info:\n")
             for key, value in registrar_info.items():
@@ -423,12 +506,24 @@ def write_output(sanitized_domain, original_domain, server_status, dns_info, ssl
             f.write("\nSSL Info:\n")
             for key, value in ssl_info.items():
                 f.write(f"{key}: {value}\n")
+                
+            # Write additional checks
+            if spf_info or dmarc_info or dkim_info or dnssec_info:
+                f.write("\nEmail Security and DNSSEC Info:\n")
+                if spf_info:
+                    f.write(f"SPF Info: {spf_info}\n")
+                if dmarc_info:
+                    f.write(f"DMARC Info: {dmarc_info}\n")
+                if dkim_info:
+                    f.write(f"DKIM Info: {dkim_info}\n")
+                if dnssec_info:
+                    f.write(f"DNSSEC Info: {dnssec_info}\n")
 
         logging.info(f"Output successfully written for domain: {sanitized_domain}")
     except Exception as e:
         logging.error(f"Failed to write output to file {filename}: {e}")
 
-def display_in_terminal(sanitized_domain, original_domain, server_status, dns_info, ssl_info, registrar_info, subdomains, reputation_urls):
+def display_in_terminal(sanitized_domain, original_domain, server_status, dns_info, ssl_info, registrar_info, subdomains, reputation_urls, spf_info=None, dmarc_info=None, dkim_info=None, dnssec_info=None, ct_info=None):
     print(f"\nDomain Provided for Analysis: {original_domain}\n")
     
     # Display the formatted server status directly
@@ -464,6 +559,22 @@ def display_in_terminal(sanitized_domain, original_domain, server_status, dns_in
     else:
         print("SSL Info: Not available")
 
+    # Display email security and DNSSEC info if checks were performed
+    if spf_info or dmarc_info or dkim_info or dnssec_info:
+        print("\nEmail Security and DNSSEC Info:")
+        if spf_info:
+            print(f"SPF Info: {spf_info}")
+        if dmarc_info:
+            print(f"DMARC Info: {dmarc_info}")
+        if dkim_info:
+            print(f"DKIM Info: {dkim_info}")
+        if dnssec_info:
+            print(f"DNSSEC Info: {dnssec_info}")
+
+    if ct_info:
+        print("\nCertificate Transparency Info:")
+        print(ct_info)
+
 def format_server_status(server_status):
     """
     Format the server status dictionary into a more readable string.
@@ -480,7 +591,7 @@ def format_server_status(server_status):
         formatted_status.append(f"{protocol.upper()} status: {status_text}")
     return "\n".join(formatted_status)
 
-def process_domain(domain, take_screenshot_flag, include_subdomains=False, should_check_subdomain_status=False, custom_user_agent=None, interactive=False, original_url=None, skip_checks=False):
+def process_domain(domain, take_screenshot_flag, include_subdomains=False, should_check_subdomain_status=False, custom_user_agent=None, email_security_checks=False, interactive=False, original_url=None, skip_checks=False):
     logging.info(f"Processing domain: {domain}")
 
     sanitized_domain = None
@@ -567,6 +678,39 @@ def process_domain(domain, take_screenshot_flag, include_subdomains=False, shoul
             else:
                 subdomains = ["Subdomain scanning not performed."]
         
+            # Email Security and DNSSEC checks
+            spf_info, dmarc_info, dkim_info, dnssec_info = None, None, None, None
+            if email_security_checks:
+                try:
+                    dnssec_info = check_dnssec(base_domain)
+                except Exception as e:
+                    logging.error(f"Failed to check DNSSEC for {base_domain}: {e}")
+                    dnssec_info = f"Error: {e}"
+
+                try:
+                    spf_info = check_spf(base_domain)
+                except Exception as e:
+                    logging.error(f"Failed to check SPF for {base_domain}: {e}")
+                    spf_info = f"Error: {e}"
+
+                try:
+                    dkim_info = check_dkim(base_domain)
+                except Exception as e:
+                    logging.error(f"Failed to check DKIM for {base_domain}: {e}")
+                    dkim_info = f"Error: {e}"
+
+                try:
+                    dmarc_info = check_dmarc(base_domain)
+                except Exception as e:
+                    logging.error(f"Failed to check DMARC for {base_domain}: {e}")
+                    dmarc_info = f"Error: {e}"
+
+            try:
+                ct_info = check_certificate_transparency(base_domain)
+            except Exception as e:
+                logging.error(f"Failed to check Certificate Transparency for {base_domain}: {e}")
+                ct_info = f"Error: {e}"
+
             # Write output (only if checks were performed)
             try:
                 write_output(
@@ -578,7 +722,12 @@ def process_domain(domain, take_screenshot_flag, include_subdomains=False, shoul
                     registrar_info,
                     subdomains,
                     output_dir,
-                    reputation_urls
+                    reputation_urls,
+                    spf_info=spf_info,
+                    dmarc_info=dmarc_info,
+                    dkim_info=dkim_info,
+                    dnssec_info=dnssec_info,
+                    ct_info=ct_info
                 )
             except Exception as e:
                 logging.error(f"Failed to write output for {domain}: {e}")
@@ -603,7 +752,12 @@ def process_domain(domain, take_screenshot_flag, include_subdomains=False, shoul
                 ssl_info,
                 registrar_info,
                 subdomains,
-                reputation_urls
+                reputation_urls,
+                spf_info=spf_info,
+                dmarc_info=dmarc_info,
+                dkim_info=dkim_info,
+                dnssec_info=dnssec_info,
+                ct_info=ct_info
             )
 
     except ValueError as e:
@@ -615,7 +769,6 @@ def process_domain(domain, take_screenshot_flag, include_subdomains=False, shoul
             logging.info(f"Finished processing domain: {sanitized_domain.split('_')[0]}")
         else:
             logging.info(f"Finished processing domain: {domain}")
-           
     
 def interactive_mode():
     print("Welcome to the Interactive Domain Profiler!")
@@ -671,6 +824,18 @@ def interactive_mode():
         else:
             print("Invalid input. Please answer 'yes' or 'no'.")
 
+    # Loop to get a valid choice for email security checks
+    while True:
+        email_security_choice = input("Do you want to perform email security checks (SPF, DKIM, DMARC, DNSSEC)? (yes/no): ").strip().lower()
+        if email_security_choice == "exit":
+            print("Exiting interactive mode.")
+            return
+        if email_security_choice in ['yes', 'no']:
+            email_security_checks = email_security_choice == 'yes'
+            break
+        else:
+            print("Invalid input. Please answer 'yes' or 'no'.")
+
     # Optional: Custom User-Agent
     while True:
         custom_user_agent = input("Optionally, provide a custom user-agent (or press Enter to use a random one): ").strip()
@@ -694,6 +859,7 @@ def interactive_mode():
     if include_subdomains:
         print(f"Check Subdomain Status: {'Yes' if should_check_subdomain_status else 'No'}")
     print(f"Take Screenshot: {'Yes' if take_screenshot_flag else 'No'}")
+    print(f"Email Security Checks: {'Yes' if email_security_checks else 'No'}")
     if custom_user_agent:
         print(f"Custom User-Agent: {custom_user_agent}")
     else:
@@ -705,7 +871,7 @@ def interactive_mode():
             print("Exiting interactive mode.")
             return
         if proceed_choice == 'yes':
-            process_domain(domain, take_screenshot_flag, include_subdomains, should_check_subdomain_status, custom_user_agent, interactive=True)
+            process_domain(domain, take_screenshot_flag, include_subdomains, should_check_subdomain_status, custom_user_agent, email_security_checks=email_security_checks, interactive=True)
             break
         elif proceed_choice == 'no':
             print("Operation cancelled by the user.")
@@ -725,6 +891,7 @@ def main():
     parser.add_argument("-k", "--check-subdomain-status", help="Check if identified subdomains are up or down", action='store_true')
     parser.add_argument("-t", "--threads", help="Number of threads to use for processing", type=int, default=5)
     parser.add_argument("-u", "--user-agent", help="Specify a custom user-agent", required=False)
+    parser.add_argument("-e", "--email-security-checks", help="Perform email security checks (SPF, DKIM, DMARC, DNSSEC)", action='store_true')
 
     args = parser.parse_args()
 
@@ -737,9 +904,10 @@ def main():
             args.subdomains = True
             args.capture_screenshot = True
             args.check_subdomain_status = True
+            args.email_security_checks = True
 
         if args.domain:
-            process_domain(args.domain, args.capture_screenshot, args.subdomains, args.check_subdomain_status, args.user_agent)
+            process_domain(args.domain, args.capture_screenshot, args.subdomains, args.check_subdomain_status, args.user_agent, email_security_checks=args.email_security_checks)
 
         if args.file:
             try:
@@ -763,6 +931,7 @@ def main():
                                 args.subdomains, 
                                 args.check_subdomain_status, 
                                 args.user_agent,
+                                email_security_checks=args.email_security_checks,
                                 skip_checks=False  # Perform checks and write output file
                             ) 
                             for sanitized_domain in domain_map
