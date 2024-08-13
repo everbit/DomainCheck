@@ -128,6 +128,7 @@ def generate_reputation_urls(domain):
         sha256_hash = hashlib.sha256(formatted_url.encode('utf-8')).hexdigest()
         virustotal_url = f"https://www.virustotal.com/gui/url/{sha256_hash}"
         urlvoid_url = f"https://www.urlvoid.com/scan/{domain}"
+        spamhaus_url= f"https://www.spamhaus.org/domain-reputation?domain={domain}"
         talos_url = f"https://talosintelligence.com/reputation_center/lookup?search={domain}"
         google_safebrowsing_url = f"https://transparencyreport.google.com/safe-browsing/search?url={domain}&hl=en"
     except Exception as e:
@@ -137,6 +138,7 @@ def generate_reputation_urls(domain):
     return {
         "virustotal": virustotal_url,
         "urlvoid": urlvoid_url,
+        "spamhaus": spamhaus_url,
         "talos": talos_url,
         "google_safebrowsing": google_safebrowsing_url
     }
