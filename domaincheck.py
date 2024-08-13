@@ -394,7 +394,7 @@ def take_screenshot(domain, output_dir, user_agent):
 
 def write_output(sanitized_domain, original_domain, server_status, dns_info, ssl_info, registrar_info, subdomains, output_dir, reputation_urls):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = os.path.join(output_dir, f"{sanitized_domain}_{timestamp}.txt")
+    filename = os.path.join(output_dir, f"{original_domain}_{timestamp}.txt")
     os.makedirs(os.path.dirname(filename), exist_ok=True)
 
     logging.info(f"Writing output to file: {filename}")
@@ -403,6 +403,7 @@ def write_output(sanitized_domain, original_domain, server_status, dns_info, ssl
         with open(filename, 'w') as f:
             f.write(f"Domain Provided for Analysis: {original_domain}\n")
             f.write(f"{server_status}\n")
+            f.write(f"\nDomain analysis: {sanitized_domain}")
             f.write("\nReputation Checks:\n")
             for service, url in reputation_urls.items():
                 f.write(f"{service.capitalize()}: {url}\n")
@@ -485,7 +486,8 @@ def process_domain(domain, take_screenshot_flag, include_subdomains=False, shoul
     sanitized_domain = None
 
     try:
-        # Use the provided original_url if available for the screenshot, otherwise default to the sanitized domain
+        # Use the provided original_url if available for the status check and screenshot, otherwise default to the sanitized domain
+        status_check_domain = original_url if original_url else domain
         screenshot_domain = original_url if original_url else domain
 
         # Extract just the domain name, stripping out any paths or query strings
@@ -511,11 +513,11 @@ def process_domain(domain, take_screenshot_flag, include_subdomains=False, shoul
             # Log the user agent used
             logging.info(f"User-Agent used: {user_agent}")
             
-            # Perform server status check using the sanitized domain without paths
+            # Perform server status check using the original URL
             try:
-                server_status = check_http_status(sanitized_domain.split('_')[0], user_agent)
+                server_status = check_http_status(status_check_domain, user_agent)
             except Exception as e:
-                logging.error(f"Failed to check HTTP status for {sanitized_domain.split('_')[0]}: {e}")
+                logging.error(f"Failed to check HTTP status for {status_check_domain}: {e}")
                 server_status = {"http": "Unknown", "https": "Unknown"}
             
             # Ensure dns_info, ssl_info, registrar_info are dictionaries
@@ -613,7 +615,7 @@ def process_domain(domain, take_screenshot_flag, include_subdomains=False, shoul
             logging.info(f"Finished processing domain: {sanitized_domain.split('_')[0]}")
         else:
             logging.info(f"Finished processing domain: {domain}")
-            
+           
     
 def interactive_mode():
     print("Welcome to the Interactive Domain Profiler!")
