@@ -122,15 +122,16 @@ def check_http_status(domain, user_agent):
 
     return status
 
-def generate_reputation_urls(domain):
+def generate_reputation_urls(domain, original_domain):
     try:
         formatted_url = f"http://{domain}/"
         sha256_hash = hashlib.sha256(formatted_url.encode('utf-8')).hexdigest()
         virustotal_url = f"https://www.virustotal.com/gui/url/{sha256_hash}"
         urlvoid_url = f"https://www.urlvoid.com/scan/{domain}"
-        spamhaus_url= f"https://www.spamhaus.org/domain-reputation?domain={domain}"
+        spamhaus_url = f"https://www.spamhaus.org/domain-reputation?domain={domain}"
         talos_url = f"https://talosintelligence.com/reputation_center/lookup?search={domain}"
         google_safebrowsing_url = f"https://transparencyreport.google.com/safe-browsing/search?url={domain}&hl=en"
+        browserling_url = f"https://www.browserling.com/browse/win10/chrome127/{original_domain}"
     except Exception as e:
         logging.error(f"Failed to generate reputation URLs for {domain}: {e}")
         return {}
@@ -140,8 +141,10 @@ def generate_reputation_urls(domain):
         "urlvoid": urlvoid_url,
         "spamhaus": spamhaus_url,
         "talos": talos_url,
-        "google_safebrowsing": google_safebrowsing_url
+        "google_safebrowsing": google_safebrowsing_url,
+        "browserling": browserling_url
     }
+
 
 
 def get_dns_info(domain):
@@ -652,10 +655,11 @@ def process_domain(domain, take_screenshot_flag, include_subdomains=False, shoul
 
             # Generate reputation URLs using the base domain
             try:
-                reputation_urls = generate_reputation_urls(base_domain)
+                reputation_urls = generate_reputation_urls(base_domain, domain)
             except Exception as e:
                 logging.error(f"Failed to generate reputation URLs for {base_domain}: {e}")
                 reputation_urls = {"Error": f"Reputation check failed: {str(e)}"}
+
             
             # Subdomain scanning logic
             subdomains = []
