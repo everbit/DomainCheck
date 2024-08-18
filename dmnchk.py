@@ -332,8 +332,7 @@ def sanitise_and_get_base_domain(domain):
         logging.error(f"Error sanitising domain {domain}: {e}")
         return domain
 
-
-def write_output(sanitised_domain, original_domain, server_status, dns_info, ssl_info, registrar_info, output_dir, reputation_urls, redirects=None, subdomains=None, subdomain_status=None, spf_info=None, dmarc_info=None, dkim_info=None, dnssec_info=None, certificate_transparency_info=None):
+def write_output(sanitised_domain, original_domain, server_status, dns_info, ssl_info, registrar_info, output_dir, reputation_urls, redirects=None, subdomains=None, subdomain_status=None, spf_info=None, dmarc_info=None, dkim_info=None, certificate_transparency_info=None):
     sanitised_filename = sanitise_output_filename(original_domain)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = os.path.join(output_dir, f"{sanitised_filename}_{timestamp}.txt")
@@ -401,7 +400,7 @@ def write_output(sanitised_domain, original_domain, server_status, dns_info, ssl
                     f.write(f"{subdomain}: {status['http']} / {status['https']}\n")
 
             # Email Security Info
-            if spf_info or dmarc_info or dkim_info or dnssec_info:
+            if spf_info or dmarc_info or dkim_info:
                 f.write("\nEmail Security Info:\n")
                 if spf_info:
                     f.write(f"SPF Info: {spf_info}\n")
@@ -409,8 +408,6 @@ def write_output(sanitised_domain, original_domain, server_status, dns_info, ssl
                     f.write(f"DMARC Info: {dmarc_info}\n")
                 if dkim_info:
                     f.write(f"DKIM Info: {dkim_info}\n")
-                if dnssec_info:
-                    f.write(f"DNSSEC Info: {dnssec_info}\n")
 
         logging.info(f"Output successfully written for domain: {sanitised_domain}")
     except Exception as e:
@@ -541,7 +538,7 @@ def process_domain(domain, custom_user_agent=None, include_subdomains=False, che
             logging.error(f"Failed to retrieve registrar information for {sanitised_domain}: {e}")
             registrar_info = {"Error": f"Registrar check failed: {str(e)}"}
 
-        spf_info, dmarc_info, dkim_info, dnssec_info = None, None, None, None
+        spf_info, dmarc_info, dkim_info = None, None, None
         if email_security_checks:
             try:
                 spf_info = check_spf(sanitised_domain)
@@ -604,7 +601,6 @@ def process_domain(domain, custom_user_agent=None, include_subdomains=False, che
                 spf_info=spf_info,
                 dmarc_info=dmarc_info,
                 dkim_info=dkim_info,
-                dnssec_info=dnssec_info,
                 certificate_transparency_info=certificate_transparency_info
             )
         except Exception as e:
