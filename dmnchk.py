@@ -11,9 +11,10 @@ import hashlib
 import ssl
 import sublist3r
 import socket
+import asyncio
+import aiohttp
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from tabulate import tabulate
 from urllib.parse import urlparse
 
 # Define base_path as the current working directory under a "domain_check" folder
@@ -51,35 +52,65 @@ def validate_domain(domain):
     if not validators.domain(domain):
         raise ValueError(f"Invalid domain format: {domain}")
 
-def check_http_status(domain, user_agent, threads):
-    def check_http(protocol, session):
-        url = f"{protocol}://{domain}"
-        headers = {'User-Agent': user_agent}
-        try:
-            response = session.get(url, headers=headers, timeout=5)
-            if response.status_code == 200:
-                return f"Up ({protocol.upper()})"
+def sanitize_input(domain):
+    # Remove 'http://', 'https://' from the start of the domain
+    domain = re.sub(r'^https?:\/\/', '', domain)
+    # Strip anything after the domain (like paths, query strings)
+    domain = domain.split('/')[0]
+    return domain
+
+def sanitize_output_filename(domain):
+    # Remove 'http://', 'https://', 'www.' and replace any '/' with '_'
+    domain = re.sub(r'^https?:\/\/(www\.)?', '', domain)
+    return domain.replace('/', '_')
+
+async def fetch_status(session, url, user_agent):
+    headers = {'User-Agent': user_agent}
+    try:
+        async with session.get(url, headers=headers, timeout=5) as response:
+            if response.status == 200:
+                return f"Up ({url})"
             else:
-                return f"Up ({protocol.upper()}) with Status Code {response.status_code}"
-        except requests.exceptions.RequestException as e:
-            logging.warning(f"Request failed for {protocol.upper()} on {domain}: {e}")
-            return f"Down ({protocol.upper()})"
+                return f"Up ({url}) with Status Code {response.status}"
+    except aiohttp.ClientError as e:
+        logging.warning(f"Request failed for {url}: {e}")
+        return f"Down ({url})"
 
-    status = {}
+async def check_http_status_async(domain, user_agent, threads):
     protocols = ['http', 'https']
+    urls = [f"{protocol}://{domain}" for protocol in protocols]
 
-    with requests.Session() as session:
-        with ThreadPoolExecutor(max_workers=threads) as executor:
-            futures = {executor.submit(check_http, protocol, session): protocol for protocol in protocols}
-            for future in as_completed(futures):
-                protocol = futures[future]
-                try:
-                    status[protocol] = future.result()
-                except Exception as e:
-                    logging.error(f"Failed to check {protocol.upper()} status for {domain}: {e}")
-                    status[protocol] = "Unknown"
+    async with aiohttp.ClientSession() as session:
+        tasks = [fetch_status(session, url, user_agent) for url in urls]
+        results = await asyncio.gather(*tasks)
 
+    status = dict(zip(protocols, results))
     return status
+
+def check_http_status(domain, user_agent, threads):
+    return asyncio.run(check_http_status_async(domain, user_agent, threads))
+
+async def fetch_subdomain_status(session, subdomain, user_agent):
+    protocols = ['http', 'https']
+    results = {}
+
+    for protocol in protocols:
+        url = f"{protocol}://{subdomain}"
+        status = await fetch_status(session, url, user_agent)
+        results[protocol] = status
+
+    return subdomain, results
+
+async def check_subdomain_status_async(subdomains, user_agent, threads):
+    async with aiohttp.ClientSession() as session:
+        tasks = [fetch_subdomain_status(session, subdomain, user_agent) for subdomain in subdomains]
+        results = await asyncio.gather(*tasks)
+
+    subdomain_status = {subdomain: status for subdomain, status in results}
+    return subdomain_status
+
+def check_subdomain_status(subdomains, user_agent, threads):
+    return asyncio.run(check_subdomain_status_async(subdomains, user_agent, threads))
 
 def generate_reputation_urls(domain, urlscan_url=None):
     try:
@@ -252,50 +283,9 @@ def get_subdomains(domain, threads):
         logging.error(f"Failed to enumerate subdomains for domain {base_domain}: {e}")
         return [f"Error: {str(e)}"]
 
-def check_subdomain_status(subdomains, user_agent, threads):
-    def check_http(protocol, subdomain, session):
-        url = f"{protocol}://{subdomain}"
-        headers = {'User-Agent': user_agent}
-        try:
-            response = session.get(url, headers=headers, timeout=5)
-            if response.status_code == 200:
-                return protocol, subdomain, f"Up ({protocol.upper()})"
-            else:
-                return protocol, subdomain, f"Up ({protocol.upper()}) with Status Code {response.status_code}"
-        except requests.exceptions.RequestException:
-            return protocol, subdomain, f"Down ({protocol.upper()})"
-        except Exception as e:
-            logging.error(f"Unexpected error checking status for {subdomain}: {e}")
-            return protocol, subdomain, f"Unknown ({protocol.upper()})"
-    
-    subdomain_status = {}
-    protocols = ['http', 'https']
-    
-    with requests.Session() as session:
-        with ThreadPoolExecutor(max_workers=threads) as executor:
-            futures = []
-            for subdomain in subdomains:
-                for protocol in protocols:
-                    futures.append(executor.submit(check_http, protocol, subdomain, session))
-                    
-            for future in as_completed(futures):
-                try:
-                    protocol, subdomain, result = future.result()
-                    if subdomain not in subdomain_status:
-                        subdomain_status[subdomain] = {}
-                    subdomain_status[subdomain][protocol] = result
-                except ValueError as e:
-                    logging.error(f"Error unpacking values: {e}. Future result: {future.result()}")
-                except Exception as e:
-                    logging.error(f"Unexpected error checking subdomain status: {e}")
-
-    return subdomain_status
-
 def sanitize_and_get_base_domain(domain):
     try:
-        if "://" in domain:
-            domain = domain.split("://")[1]
-        domain = domain.split('/')[0]
+        domain = sanitize_input(domain)
         parts = domain.split('.')
         if len(parts) > 2:
             return '.'.join(parts[-2:])
@@ -305,8 +295,9 @@ def sanitize_and_get_base_domain(domain):
         return domain
 
 def write_output(sanitized_domain, original_domain, server_status, dns_info, ssl_info, registrar_info, output_dir, reputation_urls, subdomains=None, subdomain_status=None, spf_info=None, dmarc_info=None, dkim_info=None, dnssec_info=None, certificate_transparency_info=None):
+    sanitized_filename = sanitize_output_filename(original_domain)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = os.path.join(output_dir, f"{original_domain}_{timestamp}.txt")
+    filename = os.path.join(output_dir, f"{sanitized_filename}_{timestamp}.txt")
     os.makedirs(os.path.dirname(filename), exist_ok=True)
 
     logging.info(f"Writing output to file: {filename}")
@@ -373,7 +364,6 @@ def write_output(sanitized_domain, original_domain, server_status, dns_info, ssl
     except Exception as e:
         logging.error(f"Failed to write output to file {filename}: {e}")
 
-
 def check_existing_urlscan(domain, api_key):
     headers = {
         'API-Key': api_key,
@@ -406,7 +396,6 @@ def check_existing_urlscan(domain, api_key):
     except Exception as e:
         logging.error(f"Failed to check existing URLScan data for {domain}: {e}")
     return None, None
-
 
 def scan_with_urlscan(domain, api_key, force_rescan=False, auto_rescan=False):
     if not force_rescan:
@@ -461,25 +450,19 @@ def scan_with_urlscan(domain, api_key, force_rescan=False, auto_rescan=False):
 
 def process_domain(domain, custom_user_agent=None, include_subdomains=False, check_subdomain_status_flag=False, email_security_checks=False, ssl_check_flag=False, use_urlscan=None, auto_rescan=False, threads=10):
     logging.info(f"Processing domain: {domain}")
-
     sanitized_domain = None
 
     try:
         sanitized_domain = sanitize_and_get_base_domain(domain)
-
         validate_domain(sanitized_domain)
-
         sanitized_domain = re.sub(r'[\/:*?"<>|]', '_', sanitized_domain)
-
         output_dir = os.path.join(base_path, sanitized_domain.split('_')[0])
         os.makedirs(output_dir, exist_ok=True)
-
         user_agent = get_user_agent(custom_user_agent)
-
         logging.info(f"User-Agent used: {user_agent}")
 
         try:
-            server_status = check_http_status(domain, user_agent, threads)
+            server_status = check_http_status(sanitized_domain, user_agent, threads)
         except Exception as e:
             logging.error(f"Failed to check HTTP status for {domain}: {e}")
             server_status = {"http": "Unknown", "https": "Unknown"}
@@ -532,6 +515,7 @@ def process_domain(domain, custom_user_agent=None, include_subdomains=False, che
                     subdomain_status = check_subdomain_status(subdomains, user_agent, threads)
             except Exception as e:
                 logging.error(f"Failed to enumerate subdomains for {sanitized_domain}: {e}")
+
         try:
             certificate_transparency_info = check_certificate_transparency(sanitized_domain)
         except Exception as e:
@@ -579,7 +563,6 @@ def process_domain(domain, custom_user_agent=None, include_subdomains=False, che
             logging.info(f"Finished processing domain: {sanitized_domain.split('_')[0]}")
         else:
             logging.info(f"Finished processing domain: {domain}")
-
 
 def main():
     parser = argparse.ArgumentParser(description="Domain Profiler Script")
