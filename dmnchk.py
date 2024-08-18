@@ -514,7 +514,7 @@ def process_domain(domain, custom_user_agent=None, include_subdomains=False, che
         logging.info(f"User-Agent used: {user_agent}")
 
         try:
-            # Pass the sanitized domain to the status check function
+            # Pass the sanitised domain to the status check function
             server_status, redirects = check_http_status(sanitised_domain, user_agent, threads)
         except Exception as e:
             logging.error(f"Failed to check HTTP status for {sanitised_domain}: {e}")
