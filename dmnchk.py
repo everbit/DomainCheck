@@ -11,8 +11,6 @@ import hashlib
 import ssl
 import sublist3r
 import socket
-import asyncio
-import aiohttp
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
@@ -52,65 +50,65 @@ def validate_domain(domain):
     if not validators.domain(domain):
         raise ValueError(f"Invalid domain format: {domain}")
 
-def sanitize_input(domain):
-    # Remove 'http://', 'https://' from the start of the domain
-    domain = re.sub(r'^https?:\/\/', '', domain)
-    # Strip anything after the domain (like paths, query strings)
-    domain = domain.split('/')[0]
-    return domain
+def sanitise_input(domain):
+    # Remove 'http://', 'https://' from the start of the domain for consistent internal processing
+    sanitised_domain = re.sub(r'^https?:\/\/', '', domain).split('/')[0]
+    logging.info(f"sanitised domain: {sanitised_domain}")
+    return sanitised_domain
 
-def sanitize_output_filename(domain):
+def sanitise_output_filename(domain):
     # Remove 'http://', 'https://', 'www.' and replace any '/' with '_'
-    domain = re.sub(r'^https?:\/\/(www\.)?', '', domain)
-    return domain.replace('/', '_')
+    sanitised_filename = re.sub(r'^https?:\/\/', '', domain).replace('/', '_')
+    logging.info(f"sanitised output filename: {sanitised_filename}")
+    return sanitised_filename
 
-async def fetch_status(session, url, user_agent):
+def fetch_status(url, user_agent):
     headers = {'User-Agent': user_agent}
     try:
-        async with session.get(url, headers=headers, timeout=5) as response:
-            if response.status == 200:
-                return f"Up ({url})"
+        response = requests.get(url, headers=headers, timeout=5)
+        # Output the status code to the console or log
+        print(f"HTTP Status for {url}: {response.status_code}")
+        if response.status_code == 200:
+            content = response.text
+            if content.strip():
+                return f"Up ({url}) - Status Code {response.status_code}"
             else:
-                return f"Up ({url}) with Status Code {response.status}"
-    except aiohttp.ClientError as e:
+                return f"Up ({url}) - No Content - Status Code {response.status_code}"
+        else:
+            return f"Up ({url}) - Status Code {response.status_code}"
+    except requests.exceptions.HTTPError as e:
+        logging.warning(f"Request returned a response error for {url}: {e.response.status_code}")
+        return f"Down ({url}) with Status Code {e.response.status_code}"
+    except requests.exceptions.ConnectionError:
+        logging.warning(f"Failed to connect to {url}")
+        return f"Down ({url}) - Connection Failed"
+    except requests.exceptions.Timeout:
+        logging.warning(f"Request timed out for {url}")
+        return f"Down ({url}) - Timeout"
+    except requests.exceptions.RequestException as e:
         logging.warning(f"Request failed for {url}: {e}")
-        return f"Down ({url})"
+        return f"Down ({url}) - Client Error"
 
-async def check_http_status_async(domain, user_agent, threads):
+def check_http_status(domain, user_agent, threads):
+    # Check the status of the domain with both http and https protocols
     protocols = ['http', 'https']
     urls = [f"{protocol}://{domain}" for protocol in protocols]
 
-    async with aiohttp.ClientSession() as session:
-        tasks = [fetch_status(session, url, user_agent) for url in urls]
-        results = await asyncio.gather(*tasks)
+    status = {}
+    logging.info(f"Checking HTTP status for domain: {domain} with URLs: {urls}")
 
-    status = dict(zip(protocols, results))
+    with ThreadPoolExecutor(max_workers=threads) as executor:
+        futures = {executor.submit(fetch_status, url, user_agent): url for url in urls}
+        for future in as_completed(futures):
+            url = futures[future]
+            protocol = url.split("://")[0]
+            try:
+                status[protocol] = future.result()
+            except Exception as e:
+                logging.error(f"Failed to check {protocol.upper()} status for {url}: {e}")
+                status[protocol] = "Unknown"
+
     return status
-
-def check_http_status(domain, user_agent, threads):
-    return asyncio.run(check_http_status_async(domain, user_agent, threads))
-
-async def fetch_subdomain_status(session, subdomain, user_agent):
-    protocols = ['http', 'https']
-    results = {}
-
-    for protocol in protocols:
-        url = f"{protocol}://{subdomain}"
-        status = await fetch_status(session, url, user_agent)
-        results[protocol] = status
-
-    return subdomain, results
-
-async def check_subdomain_status_async(subdomains, user_agent, threads):
-    async with aiohttp.ClientSession() as session:
-        tasks = [fetch_subdomain_status(session, subdomain, user_agent) for subdomain in subdomains]
-        results = await asyncio.gather(*tasks)
-
-    subdomain_status = {subdomain: status for subdomain, status in results}
-    return subdomain_status
-
-def check_subdomain_status(subdomains, user_agent, threads):
-    return asyncio.run(check_subdomain_status_async(subdomains, user_agent, threads))
 
 def generate_reputation_urls(domain, urlscan_url=None):
     try:
@@ -139,7 +137,7 @@ def generate_reputation_urls(domain, urlscan_url=None):
     return reputation_urls
 
 def get_dns_info(domain, threads):
-    base_domain = sanitize_and_get_base_domain(domain)
+    base_domain = sanitise_and_get_base_domain(domain)
     logging.info(f"Gathering DNS information for base domain: {base_domain}")
 
     dns_info = {}
@@ -166,7 +164,7 @@ def get_dns_info(domain, threads):
     return dns_info
 
 def get_ssl_info(domain):
-    base_domain = sanitize_and_get_base_domain(domain)
+    base_domain = sanitise_and_get_base_domain(domain)
     logging.info(f"Gathering SSL certificate information for base domain: {base_domain}")
     
     def fetch_ssl_info():
@@ -273,7 +271,7 @@ def check_dmarc(domain):
         return f"Error: {e}"
 
 def get_subdomains(domain, threads):
-    base_domain = sanitize_and_get_base_domain(domain)
+    base_domain = sanitise_and_get_base_domain(domain)
     logging.info(f"Enumerating subdomains for base domain: {base_domain}")
 
     try:
@@ -283,9 +281,33 @@ def get_subdomains(domain, threads):
         logging.error(f"Failed to enumerate subdomains for domain {base_domain}: {e}")
         return [f"Error: {str(e)}"]
 
-def sanitize_and_get_base_domain(domain):
+def check_subdomain_status(subdomains, user_agent, threads):
+    protocols = ['http', 'https']
+    status = {}
+
+    with ThreadPoolExecutor(max_workers=threads) as executor:
+        futures = []
+        for subdomain in subdomains:
+            for protocol in protocols:
+                url = f"{protocol}://{subdomain}"
+                futures.append(executor.submit(fetch_status, url, user_agent))
+
+        for future in as_completed(futures):
+            try:
+                result = future.result()
+                subdomain = result.split(' ')[1]
+                if subdomain not in status:
+                    status[subdomain] = {}
+                protocol = subdomain.split("://")[0]
+                status[subdomain][protocol] = result
+            except Exception as e:
+                logging.error(f"Unexpected error checking subdomain status: {e}")
+
+    return status
+
+def sanitise_and_get_base_domain(domain):
     try:
-        domain = sanitize_input(domain)
+        domain = sanitise_input(domain)
         parts = domain.split('.')
         if len(parts) > 2:
             return '.'.join(parts[-2:])
@@ -294,10 +316,10 @@ def sanitize_and_get_base_domain(domain):
         logging.error(f"Error sanitizing domain {domain}: {e}")
         return domain
 
-def write_output(sanitized_domain, original_domain, server_status, dns_info, ssl_info, registrar_info, output_dir, reputation_urls, subdomains=None, subdomain_status=None, spf_info=None, dmarc_info=None, dkim_info=None, dnssec_info=None, certificate_transparency_info=None):
-    sanitized_filename = sanitize_output_filename(original_domain)
+def write_output(sanitised_domain, original_domain, server_status, dns_info, ssl_info, registrar_info, output_dir, reputation_urls, subdomains=None, subdomain_status=None, spf_info=None, dmarc_info=None, dkim_info=None, dnssec_info=None, certificate_transparency_info=None):
+    sanitised_filename = sanitise_output_filename(original_domain)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = os.path.join(output_dir, f"{sanitized_filename}_{timestamp}.txt")
+    filename = os.path.join(output_dir, f"{sanitised_filename}_{timestamp}.txt")
     os.makedirs(os.path.dirname(filename), exist_ok=True)
 
     logging.info(f"Writing output to file: {filename}")
@@ -316,7 +338,7 @@ def write_output(sanitized_domain, original_domain, server_status, dns_info, ssl
                 else:
                     f.write(f"{protocol.upper()}: UNKNOWN\n")
 
-            f.write(f"\nDomain analysis: {sanitized_domain}")
+            f.write(f"\nDomain analysis: {sanitised_domain}")
             
             f.write("\nReputation Checks:\n")
             for service, url in reputation_urls.items():
@@ -360,7 +382,7 @@ def write_output(sanitized_domain, original_domain, server_status, dns_info, ssl
                 if dnssec_info:
                     f.write(f"DNSSEC Info: {dnssec_info}\n")
 
-        logging.info(f"Output successfully written for domain: {sanitized_domain}")
+        logging.info(f"Output successfully written for domain: {sanitised_domain}")
     except Exception as e:
         logging.error(f"Failed to write output to file {filename}: {e}")
 
@@ -450,76 +472,82 @@ def scan_with_urlscan(domain, api_key, force_rescan=False, auto_rescan=False):
 
 def process_domain(domain, custom_user_agent=None, include_subdomains=False, check_subdomain_status_flag=False, email_security_checks=False, ssl_check_flag=False, use_urlscan=None, auto_rescan=False, threads=10):
     logging.info(f"Processing domain: {domain}")
-    sanitized_domain = None
+
+    sanitised_domain = None
 
     try:
-        sanitized_domain = sanitize_and_get_base_domain(domain)
-        validate_domain(sanitized_domain)
-        sanitized_domain = re.sub(r'[\/:*?"<>|]', '_', sanitized_domain)
-        output_dir = os.path.join(base_path, sanitized_domain.split('_')[0])
+        sanitised_domain = sanitise_and_get_base_domain(domain)
+
+        validate_domain(sanitised_domain)
+
+        sanitised_domain = re.sub(r'[\/:*?"<>|]', '_', sanitised_domain)
+
+        output_dir = os.path.join(base_path, sanitised_domain.split('_')[0])
         os.makedirs(output_dir, exist_ok=True)
+
         user_agent = get_user_agent(custom_user_agent)
+
         logging.info(f"User-Agent used: {user_agent}")
 
         try:
-            server_status = check_http_status(sanitized_domain, user_agent, threads)
+            server_status = check_http_status(domain, user_agent, threads)
         except Exception as e:
             logging.error(f"Failed to check HTTP status for {domain}: {e}")
             server_status = {"http": "Unknown", "https": "Unknown"}
 
         dns_info, ssl_info, registrar_info = {}, {}, {}
         try:
-            dns_info = get_dns_info(sanitized_domain, threads)
+            dns_info = get_dns_info(sanitised_domain, threads)
         except Exception as e:
-            logging.error(f"Failed to retrieve DNS information for {sanitized_domain}: {e}")
+            logging.error(f"Failed to retrieve DNS information for {sanitised_domain}: {e}")
             dns_info = {"Error": f"DNS check failed: {str(e)}"}
 
         if ssl_check_flag:
             try:
-                ssl_info = get_ssl_info(sanitized_domain)
+                ssl_info = get_ssl_info(sanitised_domain)
             except Exception as e:
-                logging.error(f"Failed to retrieve SSL information for {sanitized_domain}: {e}")
+                logging.error(f"Failed to retrieve SSL information for {sanitised_domain}: {e}")
                 ssl_info = {"Error": f"SSL check failed: {str(e)}"}
 
         try:
-            registrar_info = get_registrar_info(sanitized_domain)
+            registrar_info = get_registrar_info(sanitised_domain)
         except Exception as e:
-            logging.error(f"Failed to retrieve registrar information for {sanitized_domain}: {e}")
+            logging.error(f"Failed to retrieve registrar information for {sanitised_domain}: {e}")
             registrar_info = {"Error": f"Registrar check failed: {str(e)}"}
 
         spf_info, dmarc_info, dkim_info, dnssec_info = None, None, None, None
         if email_security_checks:
             try:
-                spf_info = check_spf(sanitized_domain)
+                spf_info = check_spf(sanitised_domain)
             except Exception as e:
-                logging.error(f"Failed to check SPF for {sanitized_domain}: {e}")
+                logging.error(f"Failed to check SPF for {sanitised_domain}: {e}")
                 spf_info = f"Error: {e}"
 
             try:
-                dkim_info = check_dkim(sanitized_domain)
+                dkim_info = check_dkim(sanitised_domain)
             except Exception as e:
-                logging.error(f"Failed to check DKIM for {sanitized_domain}: {e}")
+                logging.error(f"Failed to check DKIM for {sanitised_domain}: {e}")
                 dkim_info = f"Error: {e}"
 
             try:
-                dmarc_info = check_dmarc(sanitized_domain)
+                dmarc_info = check_dmarc(sanitised_domain)
             except Exception as e:
-                logging.error(f"Failed to check DMARC for {sanitized_domain}: {e}")
+                logging.error(f"Failed to check DMARC for {sanitised_domain}: {e}")
                 dmarc_info = f"Error: {e}"
 
         subdomains, subdomain_status = None, None
         if include_subdomains:
             try:
-                subdomains = get_subdomains(sanitized_domain, threads)
+                subdomains = get_subdomains(sanitised_domain, threads)
                 if check_subdomain_status_flag and subdomains:
                     subdomain_status = check_subdomain_status(subdomains, user_agent, threads)
             except Exception as e:
-                logging.error(f"Failed to enumerate subdomains for {sanitized_domain}: {e}")
+                logging.error(f"Failed to enumerate subdomains for {sanitised_domain}: {e}")
 
         try:
-            certificate_transparency_info = check_certificate_transparency(sanitized_domain)
+            certificate_transparency_info = check_certificate_transparency(sanitised_domain)
         except Exception as e:
-            logging.error(f"Failed to check Certificate Transparency for {sanitized_domain}: {e}")
+            logging.error(f"Failed to check Certificate Transparency for {sanitised_domain}: {e}")
             certificate_transparency_info = f"Error: {e}"
 
         urlscan_url = None
@@ -531,10 +559,10 @@ def process_domain(domain, custom_user_agent=None, include_subdomains=False, che
                 logging.error(f"Failed to perform URLScan analysis for {domain}: {e}")
 
         try:
-            reputation_urls = generate_reputation_urls(sanitized_domain, urlscan_url=urlscan_url)
+            reputation_urls = generate_reputation_urls(sanitised_domain, urlscan_url=urlscan_url)
 
             write_output(
-                sanitized_domain.split('_')[0],
+                sanitised_domain.split('_')[0],
                 domain,
                 server_status,
                 dns_info,
@@ -551,7 +579,7 @@ def process_domain(domain, custom_user_agent=None, include_subdomains=False, che
                 certificate_transparency_info=certificate_transparency_info
             )
         except Exception as e:
-            logging.error(f"Failed to generate reputation URLs for {sanitized_domain}: {e}")
+            logging.error(f"Failed to generate reputation URLs for {sanitised_domain}: {e}")
             reputation_urls = {"Error": f"Reputation check failed: {str(e)}"}
 
     except ValueError as e:
@@ -559,8 +587,8 @@ def process_domain(domain, custom_user_agent=None, include_subdomains=False, che
     except Exception as e:
         logging.error(f"Failed to process domain {domain}: {e}")
     finally:
-        if sanitized_domain:
-            logging.info(f"Finished processing domain: {sanitized_domain.split('_')[0]}")
+        if sanitised_domain:
+            logging.info(f"Finished processing domain: {sanitised_domain.split('_')[0]}")
         else:
             logging.info(f"Finished processing domain: {domain}")
 
