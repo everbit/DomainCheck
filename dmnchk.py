@@ -57,7 +57,7 @@ def sanitise_input(domain):
     return sanitised_domain
 
 def sanitise_output_filename(domain):
-    # Remove 'http://', 'https://', 'www.' and replace any '/' with '_'
+    # Remove 'http://', 'https://', and replace any '/' with '_'
     sanitised_filename = re.sub(r'^https?:\/\/', '', domain).replace('/', '_')
     logging.info(f"sanitised output filename: {sanitised_filename}")
     return sanitised_filename
@@ -65,13 +65,18 @@ def sanitise_output_filename(domain):
 def fetch_status(url, user_agent):
     headers = {'User-Agent': user_agent}
     try:
-        response = requests.get(url, headers=headers, timeout=5)
+        response = requests.get(url, headers=headers, timeout=5, allow_redirects=True)
+        final_url = response.url
         # Output the status code to the console or log
-        print(f"HTTP Status for {url}: {response.status_code}")
+        logging.info(f"HTTP Status for {url}: {response.status_code}")
         if response.status_code == 200:
             content = response.text
             if content.strip():
-                return f"Up ({url}) - Status Code {response.status_code}"
+                if final_url != url:
+                    logging.info(f"{url} redirects to {final_url}")
+                    return f"Up ({url}) - Status Code {response.status_code} - Redirects to {final_url}"
+                else:
+                    return f"Up ({url}) - Status Code {response.status_code}"
             else:
                 return f"Up ({url}) - No Content - Status Code {response.status_code}"
         else:
@@ -89,12 +94,14 @@ def fetch_status(url, user_agent):
         logging.warning(f"Request failed for {url}: {e}")
         return f"Down ({url}) - Client Error"
 
+
 def check_http_status(domain, user_agent, threads):
     # Check the status of the domain with both http and https protocols
     protocols = ['http', 'https']
     urls = [f"{protocol}://{domain}" for protocol in protocols]
 
     status = {}
+    redirects = {}
     logging.info(f"Checking HTTP status for domain: {domain} with URLs: {urls}")
 
     with ThreadPoolExecutor(max_workers=threads) as executor:
@@ -103,12 +110,20 @@ def check_http_status(domain, user_agent, threads):
             url = futures[future]
             protocol = url.split("://")[0]
             try:
-                status[protocol] = future.result()
+                result = future.result()
+                status[protocol] = result
+                # Check for redirection in the result
+                if "Redirects to" in result:
+                    redirects[protocol] = result.split("Redirects to")[-1].strip()
             except Exception as e:
                 logging.error(f"Failed to check {protocol.upper()} status for {url}: {e}")
                 status[protocol] = "Unknown"
 
-    return status
+    if redirects:
+        logging.info(f"Redirects detected for domain {domain}: {redirects}")
+
+    return status, redirects
+
 
 def generate_reputation_urls(domain, urlscan_url=None):
     try:
@@ -313,10 +328,10 @@ def sanitise_and_get_base_domain(domain):
             return '.'.join(parts[-2:])
         return domain
     except Exception as e:
-        logging.error(f"Error sanitizing domain {domain}: {e}")
+        logging.error(f"Error sanitising domain {domain}: {e}")
         return domain
 
-def write_output(sanitised_domain, original_domain, server_status, dns_info, ssl_info, registrar_info, output_dir, reputation_urls, subdomains=None, subdomain_status=None, spf_info=None, dmarc_info=None, dkim_info=None, dnssec_info=None, certificate_transparency_info=None):
+def write_output(sanitised_domain, original_domain, server_status, dns_info, ssl_info, registrar_info, output_dir, reputation_urls, redirects=None, subdomains=None, subdomain_status=None, spf_info=None, dmarc_info=None, dkim_info=None, dnssec_info=None, certificate_transparency_info=None):
     sanitised_filename = sanitise_output_filename(original_domain)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = os.path.join(output_dir, f"{sanitised_filename}_{timestamp}.txt")
@@ -328,7 +343,7 @@ def write_output(sanitised_domain, original_domain, server_status, dns_info, ssl
         with open(filename, 'w') as f:
             f.write(f"Domain Provided for Analysis: {original_domain}\n")
             
-            # Corrected server status output format
+            # Server Status
             f.write("\nServer Status:\n")
             for protocol, status in server_status.items():
                 if "Up" in status:
@@ -338,8 +353,15 @@ def write_output(sanitised_domain, original_domain, server_status, dns_info, ssl
                 else:
                     f.write(f"{protocol.upper()}: UNKNOWN\n")
 
+            # Redirects Information
+            if redirects:
+                f.write("\nRedirect Information:\n")
+                for protocol, destination in redirects.items():
+                    f.write(f"{protocol.upper()} Redirects to: {destination}\n")
+
             f.write(f"\nDomain analysis: {sanitised_domain}")
             
+            # Reputation Checks
             f.write("\nReputation Checks:\n")
             for service, url in reputation_urls.items():
                 f.write(f"{service.capitalize()}: {url}\n")
@@ -348,29 +370,35 @@ def write_output(sanitised_domain, original_domain, server_status, dns_info, ssl
                 f.write("\nCertificate Transparency:\n")
                 f.write(f"{certificate_transparency_info}\n")
             
+            # Registrar Info
             f.write("\nRegistrar Info:\n")
             for key, value in registrar_info.items():
                 f.write(f"{key}: {value}\n")
                 
+            # DNS Info
             f.write("\nDNS Info:\n")
             for key, value in dns_info.items():
                 f.write(f"{key}: {', '.join(value)}\n")
                 
+            # SSL Info
             if ssl_info:
                 f.write("\nSSL Info:\n")
                 for key, value in ssl_info.items():
                     f.write(f"{key}: {value}\n")
 
+            # Subdomains
             if subdomains:
                 f.write("\nSubdomains:\n")
                 for subdomain in subdomains:
                     f.write(f"{subdomain}\n")
 
+            # Subdomain Status
             if subdomain_status:
                 f.write("\nSubdomain Status:\n")
                 for subdomain, status in subdomain_status.items():
                     f.write(f"{subdomain}: {status['http']} / {status['https']}\n")
 
+            # Email Security Info
             if spf_info or dmarc_info or dkim_info or dnssec_info:
                 f.write("\nEmail Security Info:\n")
                 if spf_info:
@@ -385,6 +413,7 @@ def write_output(sanitised_domain, original_domain, server_status, dns_info, ssl
         logging.info(f"Output successfully written for domain: {sanitised_domain}")
     except Exception as e:
         logging.error(f"Failed to write output to file {filename}: {e}")
+
 
 def check_existing_urlscan(domain, api_key):
     headers = {
@@ -470,7 +499,7 @@ def scan_with_urlscan(domain, api_key, force_rescan=False, auto_rescan=False):
         logging.error(f"Failed to scan {domain} with URLScan: {e}")
     return None
 
-def process_domain(domain, custom_user_agent=None, include_subdomains=False, check_subdomain_status_flag=False, email_security_checks=False, ssl_check_flag=False, use_urlscan=None, auto_rescan=False, threads=10):
+def process_domain(domain, custom_user_agent=None, include_subdomains=False, check_subdomain_status_flag=False, email_security_checks=False, ssl_check_flag=False, use_urlscan=None, auto_rescan=False, threads=10, use_urlvoid=None, use_virustotal=None, use_phishtank=None):
     logging.info(f"Processing domain: {domain}")
 
     sanitised_domain = None
@@ -490,10 +519,11 @@ def process_domain(domain, custom_user_agent=None, include_subdomains=False, che
         logging.info(f"User-Agent used: {user_agent}")
 
         try:
-            server_status = check_http_status(domain, user_agent, threads)
+            server_status, redirects = check_http_status(domain, user_agent, threads)
         except Exception as e:
             logging.error(f"Failed to check HTTP status for {domain}: {e}")
             server_status = {"http": "Unknown", "https": "Unknown"}
+            redirects = {}
 
         dns_info, ssl_info, registrar_info = {}, {}, {}
         try:
@@ -570,6 +600,7 @@ def process_domain(domain, custom_user_agent=None, include_subdomains=False, che
                 registrar_info,
                 output_dir,
                 reputation_urls,
+                redirects=redirects,  # Pass redirect information here
                 subdomains=subdomains,
                 subdomain_status=subdomain_status,
                 spf_info=spf_info,
@@ -591,6 +622,7 @@ def process_domain(domain, custom_user_agent=None, include_subdomains=False, che
             logging.info(f"Finished processing domain: {sanitised_domain.split('_')[0]}")
         else:
             logging.info(f"Finished processing domain: {domain}")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Domain Profiler Script")
