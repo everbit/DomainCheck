@@ -505,96 +505,92 @@ def process_domain(domain, custom_user_agent=None, include_subdomains=False, che
     logging.info(f"Processing domain: {domain}")
 
     try:
-        # Sanitize the input domain to remove 'http://' or 'https://'
-        base_domain = sanitise_and_get_base_domain(domain)
-
-        validate_domain(base_domain)
-
-        sanitised_domain = re.sub(r'[\/:*?"<>|]', '_', base_domain)
-
-        output_dir = os.path.join(base_path, sanitised_domain.split('_')[0])
+        sanitised_domain = sanitise_input(domain)
+        validate_domain(sanitised_domain)
+        base_domain = sanitise_and_get_base_domain(sanitised_domain)
+        output_dir = os.path.join(base_path, base_domain)
         os.makedirs(output_dir, exist_ok=True)
-
         user_agent = get_user_agent(custom_user_agent)
-
         logging.info(f"User-Agent used: {user_agent}")
 
         try:
-            # Pass the base domain to the status check function
-            server_status, redirects = check_http_status(base_domain, user_agent, threads)
+            # Pass the sanitized domain to the status check function
+            server_status, redirects = check_http_status(sanitised_domain, user_agent, threads)
         except Exception as e:
-            logging.error(f"Failed to check HTTP status for {base_domain}: {e}")
+            logging.error(f"Failed to check HTTP status for {sanitised_domain}: {e}")
             server_status = {"http": "Unknown", "https": "Unknown"}
             redirects = {}
 
         dns_info, ssl_info, registrar_info = {}, {}, {}
         try:
-            dns_info = get_dns_info(base_domain, threads)
+            dns_info = get_dns_info(sanitised_domain, threads)
         except Exception as e:
-            logging.error(f"Failed to retrieve DNS information for {base_domain}: {e}")
+            logging.error(f"Failed to retrieve DNS information for {sanitised_domain}: {e}")
             dns_info = {"Error": f"DNS check failed: {str(e)}"}
 
         if ssl_check_flag:
             try:
-                ssl_info = get_ssl_info(base_domain)
+                ssl_info = get_ssl_info(sanitised_domain)
             except Exception as e:
-                logging.error(f"Failed to retrieve SSL information for {base_domain}: {e}")
+                logging.error(f"Failed to retrieve SSL information for {sanitised_domain}: {e}")
                 ssl_info = {"Error": f"SSL check failed: {str(e)}"}
 
         try:
-            registrar_info = get_registrar_info(base_domain)
+            registrar_info = get_registrar_info(sanitised_domain)
         except Exception as e:
-            logging.error(f"Failed to retrieve registrar information for {base_domain}: {e}")
+            logging.error(f"Failed to retrieve registrar information for {sanitised_domain}: {e}")
             registrar_info = {"Error": f"Registrar check failed: {str(e)}"}
 
         spf_info, dmarc_info, dkim_info, dnssec_info = None, None, None, None
         if email_security_checks:
             try:
-                spf_info = check_spf(base_domain)
+                spf_info = check_spf(sanitised_domain)
             except Exception as e:
-                logging.error(f"Failed to check SPF for {base_domain}: {e}")
+                logging.error(f"Failed to check SPF for {sanitised_domain}: {e}")
                 spf_info = f"Error: {e}"
 
             try:
-                dkim_info = check_dkim(base_domain)
+                dkim_info = check_dkim(sanitised_domain)
             except Exception as e:
-                logging.error(f"Failed to check DKIM for {base_domain}: {e}")
+                logging.error(f"Failed to check DKIM for {sanitised_domain}: {e}")
                 dkim_info = f"Error: {e}"
 
             try:
-                dmarc_info = check_dmarc(base_domain)
+                dmarc_info = check_dmarc(sanitised_domain)
             except Exception as e:
-                logging.error(f"Failed to check DMARC for {base_domain}: {e}")
+                logging.error(f"Failed to check DMARC for {sanitised_domain}: {e}")
                 dmarc_info = f"Error: {e}"
 
         subdomains, subdomain_status = None, None
         if include_subdomains:
             try:
-                subdomains = get_subdomains(base_domain, threads)
+                subdomains = get_subdomains(sanitised_domain, threads)
                 if check_subdomain_status_flag and subdomains:
                     subdomain_status = check_subdomain_status(subdomains, user_agent, threads)
             except Exception as e:
-                logging.error(f"Failed to enumerate subdomains for {base_domain}: {e}")
+                logging.error(f"Failed to enumerate subdomains for {sanitised_domain}: {e}")
 
         try:
-            certificate_transparency_info = check_certificate_transparency(base_domain)
+            certificate_transparency_info = check_certificate_transparency(sanitised_domain)
         except Exception as e:
-            logging.error(f"Failed to check Certificate Transparency for {base_domain}: {e}")
+            logging.error(f"Failed to check Certificate Transparency for {sanitised_domain}: {e}")
             certificate_transparency_info = f"Error: {e}"
 
         urlscan_url = None
 
         if use_urlscan:
             try:
-                urlscan_url = scan_with_urlscan(base_domain, use_urlscan, auto_rescan=auto_rescan)
+                # Submit the original (unsanitized) domain to URLscan
+                urlscan_url = scan_with_urlscan(domain, use_urlscan, auto_rescan=auto_rescan)
             except Exception as e:
-                logging.error(f"Failed to perform URLScan analysis for {base_domain}: {e}")
+                logging.error(f"Failed to perform URLScan analysis for {domain}: {e}")
 
         try:
+            # Use the base domain for reputation checks
             reputation_urls = generate_reputation_urls(base_domain, urlscan_url=urlscan_url)
 
             write_output(
-                sanitised_domain.split('_')[0],
+                base_domain,
                 domain,
                 server_status,
                 dns_info,
@@ -602,7 +598,7 @@ def process_domain(domain, custom_user_agent=None, include_subdomains=False, che
                 registrar_info,
                 output_dir,
                 reputation_urls,
-                redirects=redirects,  # Pass redirect information here
+                redirects=redirects,
                 subdomains=subdomains,
                 subdomain_status=subdomain_status,
                 spf_info=spf_info,
@@ -620,10 +616,7 @@ def process_domain(domain, custom_user_agent=None, include_subdomains=False, che
     except Exception as e:
         logging.error(f"Failed to process domain {domain}: {e}")
     finally:
-        if sanitised_domain:
-            logging.info(f"Finished processing domain: {sanitised_domain.split('_')[0]}")
-        else:
-            logging.info(f"Finished processing domain: {domain}")
+        logging.info(f"Finished processing domain: {base_domain}")
 
 def main():
     parser = argparse.ArgumentParser(description="Domain Profiler Script")
@@ -636,7 +629,7 @@ def main():
     parser.add_argument("-e", "--email-security-checks", help="Perform email security checks (SPF, DKIM, DMARC)", action='store_true')
     parser.add_argument("-x", "--ssl-check", help="Perform SSL certificate checks", action='store_true')
     parser.add_argument("-l", "--use-urlscan", help="Enable URLScan analysis and provide the API key", required=False)
-    parser.add_argument("--auto-rescan", help="Automatically rescan the domain with URLScan if it has been scanned before", action='store_true')
+    parser.add_argument("-r", "--auto-rescan", help="Automatically rescan the domain with URLScan if it has been scanned before", action='store_true')
     parser.add_argument("-t", "--threads", help="Specify the number of threads (workers) to use", type=int, default=10)
 
     args = parser.parse_args()
