@@ -8,7 +8,6 @@ import random
 import validators
 import logging
 import hashlib
-import time
 import ssl
 import sublist3r
 import socket
@@ -52,7 +51,7 @@ def validate_domain(domain):
     if not validators.domain(domain):
         raise ValueError(f"Invalid domain format: {domain}")
 
-def check_http_status(domain, user_agent):
+def check_http_status(domain, user_agent, threads):
     def check_http(protocol, session):
         url = f"{protocol}://{domain}"
         headers = {'User-Agent': user_agent}
@@ -70,7 +69,7 @@ def check_http_status(domain, user_agent):
     protocols = ['http', 'https']
 
     with requests.Session() as session:
-        with ThreadPoolExecutor() as executor:
+        with ThreadPoolExecutor(max_workers=threads) as executor:
             futures = {executor.submit(check_http, protocol, session): protocol for protocol in protocols}
             for future in as_completed(futures):
                 protocol = futures[future]
@@ -108,7 +107,7 @@ def generate_reputation_urls(domain, urlscan_url=None):
 
     return reputation_urls
 
-def get_dns_info(domain):
+def get_dns_info(domain, threads):
     base_domain = sanitize_and_get_base_domain(domain)
     logging.info(f"Gathering DNS information for base domain: {base_domain}")
 
@@ -127,7 +126,7 @@ def get_dns_info(domain):
 
     record_types = ['A', 'AAAA', 'MX', 'CNAME', 'NS', 'TXT']
     
-    with ThreadPoolExecutor() as executor:
+    with ThreadPoolExecutor(max_workers=threads) as executor:
         futures = {executor.submit(fetch_record, record_type): record_type for record_type in record_types}
         for future in as_completed(futures):
             record_type, result = future.result()
@@ -242,7 +241,7 @@ def check_dmarc(domain):
         logging.error(f"Failed to check DMARC for {domain}: {e}")
         return f"Error: {e}"
 
-def get_subdomains(domain):
+def get_subdomains(domain, threads):
     base_domain = sanitize_and_get_base_domain(domain)
     logging.info(f"Enumerating subdomains for base domain: {base_domain}")
 
@@ -253,7 +252,7 @@ def get_subdomains(domain):
         logging.error(f"Failed to enumerate subdomains for domain {base_domain}: {e}")
         return [f"Error: {str(e)}"]
 
-def check_subdomain_status(subdomains, user_agent):
+def check_subdomain_status(subdomains, user_agent, threads):
     def check_http(protocol, subdomain, session):
         url = f"{protocol}://{subdomain}"
         headers = {'User-Agent': user_agent}
@@ -273,7 +272,7 @@ def check_subdomain_status(subdomains, user_agent):
     protocols = ['http', 'https']
     
     with requests.Session() as session:
-        with ThreadPoolExecutor() as executor:
+        with ThreadPoolExecutor(max_workers=threads) as executor:
             futures = []
             for subdomain in subdomains:
                 for protocol in protocols:
@@ -320,11 +319,11 @@ def write_output(sanitized_domain, original_domain, server_status, dns_info, ssl
             f.write("\nServer Status:\n")
             for protocol, status in server_status.items():
                 if "Up" in status:
-                    f.write(f"{protocol.upper()}: Up\n")
+                    f.write(f"{protocol.upper()}: UP\n")
                 elif "Down" in status:
-                    f.write(f"{protocol.upper()}: Down\n")
+                    f.write(f"{protocol.upper()}: DOWN\n")
                 else:
-                    f.write(f"{protocol.upper()}: Unknown\n")
+                    f.write(f"{protocol.upper()}: UNKNOWN\n")
 
             f.write(f"\nDomain analysis: {sanitized_domain}")
             
@@ -460,7 +459,7 @@ def scan_with_urlscan(domain, api_key, force_rescan=False, auto_rescan=False):
         logging.error(f"Failed to scan {domain} with URLScan: {e}")
     return None
 
-def process_domain(domain, custom_user_agent=None, include_subdomains=False, check_subdomain_status_flag=False, email_security_checks=False, ssl_check_flag=False, use_urlscan=False, urlscan_api_key=None, auto_rescan=False):
+def process_domain(domain, custom_user_agent=None, include_subdomains=False, check_subdomain_status_flag=False, email_security_checks=False, ssl_check_flag=False, use_urlscan=None, auto_rescan=False, threads=10):
     logging.info(f"Processing domain: {domain}")
 
     sanitized_domain = None
@@ -480,14 +479,14 @@ def process_domain(domain, custom_user_agent=None, include_subdomains=False, che
         logging.info(f"User-Agent used: {user_agent}")
 
         try:
-            server_status = check_http_status(domain, user_agent)
+            server_status = check_http_status(domain, user_agent, threads)
         except Exception as e:
             logging.error(f"Failed to check HTTP status for {domain}: {e}")
             server_status = {"http": "Unknown", "https": "Unknown"}
 
         dns_info, ssl_info, registrar_info = {}, {}, {}
         try:
-            dns_info = get_dns_info(sanitized_domain)
+            dns_info = get_dns_info(sanitized_domain, threads)
         except Exception as e:
             logging.error(f"Failed to retrieve DNS information for {sanitized_domain}: {e}")
             dns_info = {"Error": f"DNS check failed: {str(e)}"}
@@ -528,13 +527,11 @@ def process_domain(domain, custom_user_agent=None, include_subdomains=False, che
         subdomains, subdomain_status = None, None
         if include_subdomains:
             try:
-                subdomains = get_subdomains(sanitized_domain)
+                subdomains = get_subdomains(sanitized_domain, threads)
                 if check_subdomain_status_flag and subdomains:
-                    subdomain_status = check_subdomain_status(subdomains, user_agent)
+                    subdomain_status = check_subdomain_status(subdomains, user_agent, threads)
             except Exception as e:
                 logging.error(f"Failed to enumerate subdomains for {sanitized_domain}: {e}")
-
-        # Include certificate transparency check
         try:
             certificate_transparency_info = check_certificate_transparency(sanitized_domain)
         except Exception as e:
@@ -543,9 +540,9 @@ def process_domain(domain, custom_user_agent=None, include_subdomains=False, che
 
         urlscan_url = None
 
-        if use_urlscan and urlscan_api_key:
+        if use_urlscan:
             try:
-                urlscan_url = scan_with_urlscan(domain, urlscan_api_key, auto_rescan=auto_rescan)
+                urlscan_url = scan_with_urlscan(domain, use_urlscan, auto_rescan=auto_rescan)
             except Exception as e:
                 logging.error(f"Failed to perform URLScan analysis for {domain}: {e}")
 
@@ -567,7 +564,7 @@ def process_domain(domain, custom_user_agent=None, include_subdomains=False, che
                 dmarc_info=dmarc_info,
                 dkim_info=dkim_info,
                 dnssec_info=dnssec_info,
-                certificate_transparency_info=certificate_transparency_info  # Add CT info here
+                certificate_transparency_info=certificate_transparency_info
             )
         except Exception as e:
             logging.error(f"Failed to generate reputation URLs for {sanitized_domain}: {e}")
@@ -587,31 +584,50 @@ def process_domain(domain, custom_user_agent=None, include_subdomains=False, che
 def main():
     parser = argparse.ArgumentParser(description="Domain Profiler Script")
     
-    parser.add_argument("-d", "--domain", help="Domain to profile", required=True)
+    parser.add_argument("-d", "--domain", help="Domain to profile")
+    parser.add_argument("-f", "--file", help="File containing a list of domains to profile")
     parser.add_argument("-u", "--user-agent", help="Specify a custom user-agent", required=False)
     parser.add_argument("-s", "--subdomains", help="Include subdomain enumeration", action='store_true')
     parser.add_argument("-k", "--check-subdomain-status", help="Check if identified subdomains are up or down", action='store_true')
     parser.add_argument("-e", "--email-security-checks", help="Perform email security checks (SPF, DKIM, DMARC)", action='store_true')
     parser.add_argument("-x", "--ssl-check", help="Perform SSL certificate checks", action='store_true')
-    parser.add_argument("-l", "--use-urlscan", help="Enable URLScan analysis", action='store_true')
-    parser.add_argument("-a", "--api-key", help="URLScan API key", required=False)
+    parser.add_argument("-l", "--use-urlscan", help="Enable URLScan analysis and provide the API key", required=False)
     parser.add_argument("--auto-rescan", help="Automatically rescan the domain with URLScan if it has been scanned before", action='store_true')
+    parser.add_argument("-t", "--threads", help="Specify the number of threads (workers) to use", type=int, default=10)
 
     args = parser.parse_args()
 
     logging.info(f"Arguments used: {args}")
     
-    process_domain(
-        args.domain,
-        custom_user_agent=args.user_agent,
-        include_subdomains=args.subdomains,
-        check_subdomain_status_flag=args.check_subdomain_status,
-        email_security_checks=args.email_security_checks,
-        ssl_check_flag=args.ssl_check,
-        use_urlscan=args.use_urlscan,
-        urlscan_api_key=args.api_key,
-        auto_rescan=args.auto_rescan
-    )
+    domains = []
+
+    if args.domain:
+        domains.append(args.domain)
+
+    if args.file:
+        try:
+            with open(args.file, 'r') as file:
+                domains.extend([line.strip() for line in file if line.strip()])
+        except Exception as e:
+            logging.error(f"Failed to read domains from file {args.file}: {e}")
+            return
+
+    if not domains:
+        logging.error("No domain or file specified. Use --domain or --file to specify a domain or a file with domains.")
+        return
+
+    for domain in domains:
+        process_domain(
+            domain,
+            custom_user_agent=args.user_agent,
+            include_subdomains=args.subdomains,
+            check_subdomain_status_flag=args.check_subdomain_status,
+            email_security_checks=args.email_security_checks,
+            ssl_check_flag=args.ssl_check,
+            use_urlscan=args.use_urlscan,
+            auto_rescan=args.auto_rescan,
+            threads=args.threads
+        )
 
 if __name__ == "__main__":
     main()
