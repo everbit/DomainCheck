@@ -625,10 +625,14 @@ def main():
     parser.add_argument("-e", "--email-security-checks", help="Perform email security checks (SPF, DKIM, DMARC)", action='store_true')
     parser.add_argument("-x", "--ssl-check", help="Perform SSL certificate checks", action='store_true')
     parser.add_argument("-l", "--use-urlscan", help="Enable URLScan analysis and provide the API key", required=False)
-    parser.add_argument("-r", "--auto-rescan", help="Automatically rescan the domain with URLScan if it has been scanned before", action='store_true')
+    parser.add_argument("-r", "--rescan", help="Rescan the domain with URLScan if it has been scanned before", action='store_true')
     parser.add_argument("-t", "--threads", help="Specify the number of threads (workers) to use", type=int, default=10)
 
     args = parser.parse_args()
+
+    # Check if -r is used without -l
+    if args.rescan and not args.use_urlscan:
+        parser.error("-r/--rescan requires -l/--use-urlscan to be specified")
 
     logging.info(f"Arguments used: {args}")
     
@@ -658,7 +662,7 @@ def main():
             email_security_checks=args.email_security_checks,
             ssl_check_flag=args.ssl_check,
             use_urlscan=args.use_urlscan,
-            auto_rescan=args.auto_rescan,
+            auto_rescan=args.rescan,
             threads=args.threads
         )
 
